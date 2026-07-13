@@ -149,6 +149,7 @@
   .stat-box{background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px;}
   .stat-box .k{font-size:11px; color:var(--moss); text-transform:uppercase; letter-spacing:0.6px;}
   .stat-box .v{font-family:'IBM Plex Mono'; font-size:20px; font-weight:600; margin-top:4px;}
+  .stat-box .sub{font-size:12px; color:var(--moss); margin-top:3px;}
 
   .section-title{font-family:'Space Grotesk'; font-weight:600; font-size:14.5px; margin:22px 0 10px; display:flex; align-items:center; justify-content:space-between;}
 
@@ -260,6 +261,18 @@
   </div>
 </div>
 
+<div id="details-overlay" class="hidden" style="position:fixed; inset:0; background:var(--paper); z-index:100; overflow-y:auto;">
+  <div style="max-width:480px; margin:0 auto; padding:18px 20px 40px;">
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:6px;">
+      <button class="icon-btn" onclick="closeCalcDetails()" aria-label="Back">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+      </button>
+      <h1 class="page-title" style="margin:0;">Calculation details</h1>
+    </div>
+    <div id="details-body"></div>
+  </div>
+</div>
+
 <script>
 const STORAGE_KEY = 'awj:data';
 let state = { profile:null, weightLogs:[], nutritionLogs:[], ackPhaseId:null };
@@ -282,22 +295,81 @@ async function saveState(){
   catch(e){ console.error('save failed', e); }
 }
 
+// ---------------- calorie engine ----------------
+const ACTIVITY_MULTIPLIERS = { sedentary:1.20, light:1.375, moderate:1.55, veryActive:1.725 };
+const CALORIE_FLOOR = { male:1500, female:1200 };
+
+function hasBodyStats(p){
+  return !!(p && p.height && p.age && p.sex && p.activityLevel);
+}
+
+function calcBMR(weightLbs, heightIn, age, sex){
+  const kg = weightLbs / 2.205;
+  const cm = heightIn * 2.54;
+  const base = 10*kg + 6.25*cm - 5*age;
+  return Math.round(sex==='male'? base+5 : base-161);
+}
+
+function calcTDEE(bmr, activityLevel){
+  return Math.round(bmr * (ACTIVITY_MULTIPLIERS[activityLevel] || ACTIVITY_MULTIPLIERS.sedentary));
+}
+
+function calcRecommendedMultiplier(tdee, weightLbs){
+  return Math.round((tdee / weightLbs) * 10) / 10;
+}
+
+function calcStartingCalories(p){
+  const goalType = p.goalType || 'loss';
+  if(goalType==='gain') return Math.round(p.tdee + p.deficit);
+  if(goalType==='maintain') return Math.round(p.tdee);
+  return Math.round(p.tdee - p.deficit);
+}
+
+function calorieFloor(p){
+  return CALORIE_FLOOR[p.sex] || CALORIE_FLOOR.female;
+}
+
+function calorieWarning(p, calories){
+  return calories < calorieFloor(p);
+}
+
 // ---------------- roadmap engine ----------------
+function computePhaseMaintenance(p, weightTarget){
+  if(p.calcMode!=='multiplier' && hasBodyStats(p) && p.tdee){
+    return Math.round(p.tdee * (weightTarget / p.startWeight));
+  }
+  return Math.round(weightTarget * p.multiplier);
+}
+
+function computePhaseEating(p, weightTarget){
+  const maintenance = computePhaseMaintenance(p, weightTarget);
+  const goalType = p.goalType || 'loss';
+  if(goalType==='gain') return Math.round(maintenance + p.deficit);
+  if(goalType==='maintain') return maintenance;
+  return Math.round(maintenance - p.deficit);
+}
+
 function computePhases(p){
+  const dir = p.goalWeight >= p.startWeight ? 1 : -1;
   const targets = [];
   let w = p.startWeight;
-  while (w > p.goalWeight + 0.001){
-    targets.push(Math.round(w*10)/10);
-    w -= p.interval;
+  if(dir>0){
+    while (w < p.goalWeight - 0.001){ targets.push(Math.round(w*10)/10); w += p.interval; }
+  } else {
+    while (w > p.goalWeight + 0.001){ targets.push(Math.round(w*10)/10); w -= p.interval; }
   }
   targets.push(p.goalWeight);
-  const dedup = [...new Set(targets)].sort((a,b)=>b-a);
+  const dedup = [...new Set(targets)].sort((a,b)=> dir>0 ? a-b : b-a);
   return dedup.map((t,i)=>({
     id:i+1,
     weightTarget:t,
-    maintenance: Math.round(t*p.multiplier),
-    eating: Math.round(t*p.multiplier - p.deficit)
+    maintenance: computePhaseMaintenance(p,t),
+    eating: computePhaseEating(p,t)
   }));
+}
+
+function phaseDirection(phases){
+  return (phases.length>1 && phases[0].weightTarget < phases[1].weightTarget) ? 1 : -1;
 }
 
 function currentWeight(){
@@ -318,14 +390,19 @@ function rollingAverageWeight(n=ROLLING_WINDOW){
 }
 
 function getActivePhase(phases, w){
+  const dir = phaseDirection(phases);
   for(const ph of phases){
-    if(w > ph.weightTarget) return ph;
+    if(dir>0){ if(w < ph.weightTarget) return ph; }
+    else { if(w > ph.weightTarget) return ph; }
   }
   return phases[phases.length-1];
 }
 
 function isGoalReached(){
-  return rollingAverageWeight() <= state.profile.goalWeight + 0.001;
+  const p = state.profile;
+  const avg = rollingAverageWeight();
+  if(p.goalWeight >= p.startWeight) return avg >= p.goalWeight - 0.001;
+  return avg <= p.goalWeight + 0.001;
 }
 
 // ---------------- utils ----------------
@@ -343,16 +420,83 @@ function showToast(msg){
 }
 
 // ---------------- setup screen ----------------
+const ACTIVITY_OPTIONS = [
+  {val:'sedentary', label:'Sedentary', helper:'Little to no exercise'},
+  {val:'light', label:'Light Activity', helper:'Light exercise 1-3 days/week'},
+  {val:'moderate', label:'Moderate Activity', helper:'Moderate exercise 3-5 days/week'},
+  {val:'veryActive', label:'Very Active', helper:'Hard exercise 6-7 days/week'},
+];
+const GOAL_TYPE_OPTIONS = [
+  {val:'loss', label:'Lose Weight'},
+  {val:'gain', label:'Gain Weight'},
+  {val:'maintain', label:'Maintain Weight'},
+];
+const DEFICIT_PRESETS = [250,500,750,1000];
+
+function readSetupFormValues(prefix){
+  const val = id => document.getElementById(`${prefix}${id}`);
+  const startWeight = parseFloat(val('current').value);
+  const height = parseFloat(val('height').value);
+  const age = parseFloat(val('age').value);
+  const sex = document.querySelector(`#${prefix}grp-sex .chip.active`)?.dataset.val;
+  const activityLevel = document.querySelector(`#${prefix}grp-activity .chip.active`)?.dataset.val;
+  const goalType = document.querySelector(`#${prefix}grp-goaltype .chip.active`)?.dataset.val || 'loss';
+  const goalWeightInput = parseFloat(val('goal')?.value);
+  const goalWeight = goalType==='maintain' ? startWeight : goalWeightInput;
+  const calcMode = document.querySelector(`#${prefix}grp-calcmode .chip.active`)?.dataset.val || 'auto';
+  const multiplierChip = document.querySelector(`#${prefix}grp-multiplier .chip.active`)?.dataset.val;
+  const deficitChip = document.querySelector(`#${prefix}grp-deficit .chip.active`)?.dataset.val;
+  const deficitCustom = parseFloat(val('deficit-custom')?.value);
+  const deficit = deficitChip==='custom' ? (deficitCustom||500) : parseFloat(deficitChip||500);
+  const interval = parseFloat(document.querySelector(`#${prefix}grp-interval .chip.active`)?.dataset.val || 5);
+
+  let bmr=null, tdee=null, recommendedMultiplier=null;
+  if(startWeight && height && age && sex && activityLevel){
+    bmr = calcBMR(startWeight, height, age, sex);
+    tdee = calcTDEE(bmr, activityLevel);
+    recommendedMultiplier = calcRecommendedMultiplier(tdee, startWeight);
+  }
+  const multiplier = calcMode==='multiplier'
+    ? parseFloat(multiplierChip || (recommendedMultiplier? Math.round(recommendedMultiplier):12))
+    : (recommendedMultiplier ? Math.round(recommendedMultiplier) : parseFloat(multiplierChip||12));
+
+  return { startWeight, height, age, sex, activityLevel, goalType, goalWeight, calcMode, multiplier, deficit, interval, bmr, tdee, recommendedMultiplier };
+}
+
+function updateSetupPreview(prefix){
+  const v = readSetupFormValues(prefix);
+  const box = document.getElementById(`${prefix}calc-preview`);
+  if(!box) return;
+  if(!v.tdee){
+    box.innerHTML = `<div class="helper">Fill in weight, height, age, sex, and activity level for a personalized calorie estimate. Until then we'll fall back to a weight × multiplier estimate.</div>`;
+    return;
+  }
+  const startingCalories = calcStartingCalories(v);
+  const tooLow = calorieWarning(v, startingCalories);
+  box.innerHTML = `
+    <div class="row2">
+      <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">BMR</div><div class="mono" style="font-weight:600;">${v.bmr} cal</div></div>
+      <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">TDEE</div><div class="mono" style="font-weight:600;">${v.tdee} cal</div></div>
+    </div>
+    <div class="row2" style="margin-top:10px;">
+      <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Your multiplier</div><div class="mono" style="font-weight:600;">${fmt(v.recommendedMultiplier)}x</div></div>
+      <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Starting calories</div><div class="mono" style="font-weight:600;">${startingCalories} cal</div></div>
+    </div>
+    ${tooLow? `<div class="helper" style="color:var(--danger); margin-top:10px;">This calorie target may be too aggressive.</div>` : ''}
+  `;
+}
+
 function renderSetupScreen(){
   const el = document.getElementById('setup-screen');
   const p = state.profile || {};
+  const pfx = 'f-';
   el.innerHTML = `
     <div class="setup-hero">
       <div class="brand-mark" style="margin-bottom:14px;">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 20L9 8L13 14L16 9L21 20" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </div>
       <div class="display">Set your goal once.<br>Follow the roadmap.</div>
-      <p>Tell us where you're starting and where you're headed. We'll build a step-by-step calorie roadmap that adjusts automatically as you reach each milestone.</p>
+      <p>Tell us about yourself and where you're headed. We'll estimate your energy needs first, then build a step-by-step calorie roadmap that adjusts automatically as you reach each milestone.</p>
     </div>
     <div class="stack">
       <div class="card">
@@ -366,33 +510,89 @@ function renderSetupScreen(){
             <input type="number" id="f-current" value="${p.startWeight||''}" placeholder="e.g. 315" inputmode="decimal">
           </div>
           <div class="field">
-            <label>Goal weight (lbs)</label>
-            <input type="number" id="f-goal" value="${p.goalWeight||''}" placeholder="e.g. 220" inputmode="decimal">
+            <label>Height (inches)</label>
+            <input type="number" id="f-height" value="${p.height||''}" placeholder="e.g. 68" inputmode="decimal">
           </div>
         </div>
-        <div id="goal-error" class="helper" style="color:var(--danger); display:none;">Goal weight must be at least 10 lbs below current weight.</div>
+        <div class="row2">
+          <div class="field" style="margin-bottom:0;">
+            <label>Age</label>
+            <input type="number" id="f-age" value="${p.age||''}" placeholder="e.g. 34" inputmode="decimal">
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label>Sex</label>
+            <div class="chip-group" id="f-grp-sex">
+              <div class="chip ${p.sex==='male'?'active':''}" data-val="male">Male</div>
+              <div class="chip ${p.sex==='female'?'active':''}" data-val="female">Female</div>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div class="card">
         <div class="field">
-          <label>Calorie multiplier</label>
-          <div class="chip-group" id="grp-multiplier">
-            ${[10,11,12,13,14,15].map(v=>`<div class="chip ${((p.multiplier||12)==v)?'active':''}" data-val="${v}">${v}×</div>`).join('')}
+          <label>Activity level</label>
+          <div class="chip-group" id="f-grp-activity">
+            ${ACTIVITY_OPTIONS.map(o=>`<div class="chip ${(p.activityLevel||'sedentary')===o.val?'active':''}" data-val="${o.val}">${o.label}</div>`).join('')}
           </div>
-          <div class="helper">Maintenance calories = goal weight × multiplier. 12× is a common starting point.</div>
+          <div class="helper">Used to estimate your total daily energy expenditure (TDEE).</div>
         </div>
+      </div>
+
+      <div class="card">
         <div class="field">
-          <label>Daily deficit</label>
-          <div class="chip-group" id="grp-deficit">
-            ${[300,500,750,1000].map(v=>`<div class="chip ${((p.deficit||500)==v)?'active':''}" data-val="${v}">${v} cal</div>`).join('')}
+          <label>Goal type</label>
+          <div class="chip-group" id="f-grp-goaltype">
+            ${GOAL_TYPE_OPTIONS.map(o=>`<div class="chip ${(p.goalType||'loss')===o.val?'active':''}" data-val="${o.val}">${o.label}</div>`).join('')}
           </div>
         </div>
-        <div class="field">
-          <label>Adjust every</label>
-          <div class="chip-group" id="grp-interval">
-            ${[5,10].map(v=>`<div class="chip ${((p.interval||5)==v)?'active':''}" data-val="${v}">${v} lbs</div>`).join('')}
+        <div class="field" id="f-goal-weight-field" style="margin-bottom:0;">
+          <label>Goal weight (lbs)</label>
+          <input type="number" id="f-goal" value="${p.goalWeight||''}" placeholder="e.g. 220" inputmode="decimal">
+        </div>
+        <div id="goal-error" class="helper" style="color:var(--danger); display:none;">Goal weight must be at least 5 lbs from your current weight, in the right direction for your goal type.</div>
+      </div>
+
+      <div class="card">
+        <label style="margin-bottom:10px;">Your calorie estimate</label>
+        <div id="f-calc-preview"></div>
+      </div>
+
+      <div class="card">
+        <div style="display:flex; justify-content:space-between; align-items:center; cursor:pointer;" id="f-advanced-toggle">
+          <label style="margin-bottom:0;">Advanced settings</label>
+          <span class="helper" id="f-advanced-label" style="margin-top:0;">Customize strategy</span>
+        </div>
+        <div id="f-advanced-body" class="hidden" style="margin-top:14px;">
+          <div class="field">
+            <label>Calculation mode</label>
+            <div class="chip-group" id="f-grp-calcmode">
+              <div class="chip active" data-val="auto">Automatic</div>
+              <div class="chip" data-val="multiplier">Manual multiplier</div>
+            </div>
+            <div class="helper">Automatic uses your BMR/TDEE estimate. Manual lets you pick a flat weight × multiplier.</div>
           </div>
-          <div class="helper">Your calorie target steps down each time you reach a new weight milestone.</div>
+          <div class="field" id="f-multiplier-field">
+            <label>Calorie multiplier</label>
+            <div class="chip-group" id="f-grp-multiplier">
+              ${[10,11,12,13,14,15].map(v=>`<div class="chip ${((p.multiplier||12)==v)?'active':''}" data-val="${v}">${v}×</div>`).join('')}
+            </div>
+          </div>
+          <div class="field">
+            <label>Daily deficit / surplus</label>
+            <div class="chip-group" id="f-grp-deficit">
+              ${DEFICIT_PRESETS.map(v=>`<div class="chip ${((p.deficit||500)==v)?'active':''}" data-val="${v}">${v} cal</div>`).join('')}
+              <div class="chip ${p.deficit && !DEFICIT_PRESETS.includes(p.deficit)?'active':''}" data-val="custom">Custom</div>
+            </div>
+            <input type="number" id="f-deficit-custom" class="hidden" style="margin-top:8px;" placeholder="Custom calories" value="${p.deficit && !DEFICIT_PRESETS.includes(p.deficit)? p.deficit : ''}" inputmode="decimal">
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label>Adjust every</label>
+            <div class="chip-group" id="f-grp-interval">
+              ${[5,10].map(v=>`<div class="chip ${((p.interval||5)==v)?'active':''}" data-val="${v}">${v} lbs</div>`).join('')}
+            </div>
+            <div class="helper">Your calorie target steps as you reach each weight milestone.</div>
+          </div>
         </div>
       </div>
 
@@ -401,31 +601,76 @@ function renderSetupScreen(){
     </div>
   `;
 
-  function bindChips(groupId){
+  function bindChips(groupId, onChange){
     const g = document.getElementById(groupId);
     g.querySelectorAll('.chip').forEach(c=>{
-      c.onclick = ()=>{ g.querySelectorAll('.chip').forEach(x=>x.classList.remove('active')); c.classList.add('active'); };
+      c.onclick = ()=>{ g.querySelectorAll('.chip').forEach(x=>x.classList.remove('active')); c.classList.add('active'); onChange && onChange(); };
     });
   }
-  bindChips('grp-multiplier'); bindChips('grp-deficit'); bindChips('grp-interval');
+
+  function refresh(){
+    updateSetupPreview(pfx);
+  }
+
+  bindChips('f-grp-sex', refresh);
+  bindChips('f-grp-activity', refresh);
+  bindChips('f-grp-calcmode', ()=>{
+    const mode = document.querySelector('#f-grp-calcmode .chip.active').dataset.val;
+    document.getElementById('f-multiplier-field').style.opacity = mode==='multiplier' ? '1' : '0.45';
+    refresh();
+  });
+  bindChips('f-grp-multiplier', refresh);
+  bindChips('f-grp-interval', refresh);
+  bindChips('f-grp-deficit', ()=>{
+    const isCustom = document.querySelector('#f-grp-deficit .chip.active').dataset.val==='custom';
+    document.getElementById('f-deficit-custom').classList.toggle('hidden', !isCustom);
+    refresh();
+  });
+  bindChips('f-grp-goaltype', ()=>{
+    const goalType = document.querySelector('#f-grp-goaltype .chip.active').dataset.val;
+    document.getElementById('f-goal-weight-field').classList.toggle('hidden', goalType==='maintain');
+    refresh();
+  });
+
+  document.getElementById('f-current').addEventListener('input', refresh);
+  document.getElementById('f-height').addEventListener('input', refresh);
+  document.getElementById('f-age').addEventListener('input', refresh);
+  document.getElementById('f-deficit-custom').addEventListener('input', refresh);
+
+  document.getElementById('f-advanced-toggle').onclick = ()=>{
+    const body = document.getElementById('f-advanced-body');
+    const expanded = !body.classList.contains('hidden');
+    body.classList.toggle('hidden', expanded);
+    document.getElementById('f-advanced-label').textContent = expanded ? 'Customize strategy' : 'Automatic calculation';
+  };
+
+  if((p.goalType||'loss')==='maintain'){
+    document.getElementById('f-goal-weight-field').classList.add('hidden');
+  }
+  document.getElementById('f-multiplier-field').style.opacity = '0.45';
+
+  refresh();
 
   document.getElementById('btn-create').onclick = async ()=>{
     const name = document.getElementById('f-name').value.trim();
-    const startWeight = parseFloat(document.getElementById('f-current').value);
-    const goalWeight = parseFloat(document.getElementById('f-goal').value);
-    const multiplier = parseFloat(document.querySelector('#grp-multiplier .chip.active')?.dataset.val || 12);
-    const deficit = parseFloat(document.querySelector('#grp-deficit .chip.active')?.dataset.val || 500);
-    const interval = parseFloat(document.querySelector('#grp-interval .chip.active')?.dataset.val || 5);
-
+    const v = readSetupFormValues(pfx);
     const err = document.getElementById('goal-error');
-    if(!startWeight || !goalWeight || goalWeight >= startWeight || (startWeight-goalWeight) < 10){
+
+    const diff = v.goalWeight - v.startWeight;
+    const validDirection = v.goalType==='gain' ? diff >= 5 : v.goalType==='maintain' ? true : diff <= -5;
+    if(!v.startWeight || !v.height || !v.age || !v.sex || !v.activityLevel || !v.goalWeight || !validDirection){
       err.style.display='block';
       return;
     }
     err.style.display='none';
 
-    state.profile = { name, startWeight, goalWeight, multiplier, deficit, interval, createdDate: todayStr() };
-    state.weightLogs = state.weightLogs.length ? state.weightLogs : [{id:cryptoId(), date: todayStr(), weight: startWeight, notes:''}];
+    state.profile = {
+      name, startWeight:v.startWeight, goalWeight:v.goalWeight,
+      height:v.height, age:v.age, sex:v.sex, activityLevel:v.activityLevel, goalType:v.goalType,
+      multiplier:v.multiplier, recommendedMultiplier:v.recommendedMultiplier, bmr:v.bmr, tdee:v.tdee,
+      calcMode:v.calcMode, deficit:v.deficit, interval:v.interval, createdDate: todayStr()
+    };
+    state.weightLogs = state.weightLogs.length ? state.weightLogs : [{id:cryptoId(), date: todayStr(), weight: v.startWeight, notes:''}];
     state.ackPhaseId = 1;
     await saveState();
     boot();
@@ -437,17 +682,25 @@ function cryptoId(){ return 'id'+Math.random().toString(36).slice(2,10)+Date.now
 // ---------------- dashboard ----------------
 function renderDashboard(){
   const p = state.profile;
+  const goalType = p.goalType || 'loss';
   const phases = computePhases(p);
+  const dir = phaseDirection(phases);
   const cw = currentWeight();
   const avgW = rollingAverageWeight();
   const avgCount = Math.min(state.weightLogs.length, ROLLING_WINDOW);
   const goalDone = isGoalReached();
   const active = getActivePhase(phases, avgW);
-  const totalLost = p.startWeight - avgW;
-  const totalToLose = p.startWeight - p.goalWeight;
-  const progressPct = Math.max(0, Math.min(100, (totalLost/totalToLose)*100));
-  const remaining = Math.max(0, avgW - p.goalWeight);
-  const distance = Math.max(0, avgW - active.weightTarget);
+  const totalToLose = Math.abs(p.goalWeight - p.startWeight) || 1;
+  const totalChange = goalType==='gain' ? (avgW - p.startWeight) : (p.startWeight - avgW);
+  const totalChangeLabel = goalType==='gain' ? 'Total gained' : goalType==='maintain' ? 'Weight change' : 'Total lost';
+  const progressPct = Math.max(0, Math.min(100, (totalChange/totalToLose)*100));
+  const remaining = Math.max(0, dir>0 ? (p.goalWeight-avgW) : (avgW-p.goalWeight));
+  const distance = Math.max(0, dir>0 ? (active.weightTarget-avgW) : (avgW-active.weightTarget));
+  const todaysNutrition = state.nutritionLogs.find(n=>n.date===todayStr());
+  const eatenToday = todaysNutrition ? todaysNutrition.calories : 0;
+  const remainingCals = active.eating - eatenToday;
+  const tooLow = hasBodyStats(p) && calorieWarning(p, active.eating);
+  const deficitLabel = goalType==='gain' ? `${p.deficit} cal surplus` : goalType==='maintain' ? 'Maintaining' : `${p.deficit} cal deficit`;
 
   const el = document.getElementById('view-dashboard');
   el.innerHTML = `
@@ -462,6 +715,7 @@ function renderDashboard(){
           <div class="hero-label">Today's target</div>
           <div class="hero-weight mono" style="font-size:26px;">${goalDone? '—' : fmt(active.eating,0)}</div>
           <div class="hero-goal">${goalDone? 'Goal reached' : 'calories'}</div>
+          ${!goalDone? `<div class="hero-goal">${fmt(eatenToday,0)} eaten · ${remainingCals>=0? fmt(remainingCals,0)+' left' : fmt(Math.abs(remainingCals),0)+' over'}</div>` : ''}
         </div>
       </div>
       <div class="hero-progress-track"><div class="hero-progress-fill" style="width:${progressPct}%;"></div></div>
@@ -473,12 +727,50 @@ function renderDashboard(){
 
     ${!goalDone && distance <= 1 ? `<div class="banner" style="margin-top:14px;">🏁 <div>Your ${avgCount}-log average is just <strong>${fmt(distance,1)} lb</strong> from unlocking your next calorie step at ${fmt(active.weightTarget,0)} lbs.</div></div>` : ''}
     ${goalDone ? `<div class="banner" style="margin-top:14px;">🎉 <div>Your ${avgCount}-log average has reached your goal weight of ${fmt(p.goalWeight,0)} lbs. You can set a new goal any time from Setup.</div></div>` : ''}
+    ${!goalDone && tooLow ? `<div class="banner" style="margin-top:14px; background:#F7E0DA; border-color:#E7B7A8; color:#7A3320;">⚠️ <div>This calorie target may be too aggressive.</div></div>` : ''}
 
     <div class="stat-grid">
-      <div class="stat-box"><div class="k">Total lost</div><div class="v">${fmt(totalLost)} lbs</div></div>
-      <div class="stat-box"><div class="k">Current phase</div><div class="v" style="font-size:16px;">${fmt(active.weightTarget,0)} lb phase</div></div>
-      <div class="stat-box"><div class="k">${avgCount}-log average</div><div class="v">${fmt(avgW)} lbs</div></div>
+      <div class="stat-box">
+        <div class="k">${totalChangeLabel}</div>
+        <div class="v">${fmt(Math.abs(totalChange))} lbs</div>
+        <div class="sub">Avg: ${fmt(avgW)} lbs</div>
+      </div>
+      <div class="stat-box">
+        <div class="k">Current phase</div>
+        <div class="v" style="font-size:16px;">${fmt(active.weightTarget,0)} lb phase</div>
+        <div class="sub">Phase ${active.id} of ${phases.length}</div>
+      </div>
+      <div class="stat-box">
+        <div class="k">Current phase calories</div>
+        <div class="v">${active.eating} cal</div>
+      </div>
+      ${hasBodyStats(p) && p.tdee ? `
+      <div class="stat-box">
+        <div class="k">Estimated maintenance</div>
+        <div class="v">${active.maintenance} cal</div>
+      </div>
+      ` : ''}
     </div>
+
+    ${hasBodyStats(p) && p.tdee ? `
+    <div class="card" style="margin-top:12px;">
+      <div class="row2">
+        <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Current strategy</div><div class="mono" style="font-weight:600; margin-top:4px;">${deficitLabel}</div></div>
+        <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Calculated multiplier</div><div class="mono" style="font-weight:600; margin-top:4px;">${fmt(p.recommendedMultiplier)}x</div></div>
+      </div>
+      <div class="helper" style="margin-top:10px;">Starting calories were ${calcStartingCalories(p)} cal/day at ${fmt(p.startWeight,0)} lbs.</div>
+      <button class="btn btn-ghost" style="margin-top:12px;" onclick="openCalcDetails()">View calculation details</button>
+    </div>
+    ` : `
+    <div class="card" style="margin-top:12px;">
+      <div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Current strategy</div>
+      <div class="mono" style="font-weight:600; margin-top:4px;">${deficitLabel}</div>
+      <div class="helper" style="margin-top:10px;">Add your height, age, sex, and activity level in Setup to see a personalized BMR/TDEE breakdown.</div>
+      <button class="btn btn-ghost" style="margin-top:12px;" onclick="openCalcDetails()">View calculation details</button>
+    </div>
+    `}
+
+    ${renderEstimatedTimeline()}
 
     <div class="section-title">Quick log <span style="font-weight:400; color:var(--moss); font-size:12px;">tap to add today's numbers</span></div>
     <div class="row2">
@@ -493,6 +785,110 @@ function renderDashboard(){
     <div class="card">${renderTrendChart()}</div>
 
     ${renderWeeklyInsight()}
+  `;
+}
+
+// ---------------- calculation details ----------------
+function openCalcDetails(){
+  renderCalcDetails();
+  document.getElementById('details-overlay').classList.remove('hidden');
+  window.scrollTo(0,0);
+}
+function closeCalcDetails(){
+  document.getElementById('details-overlay').classList.add('hidden');
+}
+
+function detailRow(label, formula, result){
+  return `
+    <div class="log-entry" style="align-items:flex-start;">
+      <div>
+        <div class="log-date">${label}</div>
+        <div class="log-note mono" style="max-width:none; margin-top:4px;">${formula}</div>
+      </div>
+      <div class="log-weight">${result}</div>
+    </div>
+  `;
+}
+
+function renderCalcDetails(){
+  const p = state.profile;
+  const body = document.getElementById('details-body');
+  const phases = computePhases(p);
+  const avgW = rollingAverageWeight();
+  const active = getActivePhase(phases, avgW);
+  const goalType = p.goalType || 'loss';
+  const adjustWord = goalType==='gain' ? 'surplus' : goalType==='maintain' ? 'adjustment' : 'deficit';
+
+  if(!hasBodyStats(p) || !p.tdee){
+    body.innerHTML = `
+      <p class="page-sub">This profile doesn't have body stats yet, so calories are estimated with a flat weight × multiplier formula instead of BMR/TDEE.</p>
+      <div class="card stack">
+        ${detailRow('Phase maintenance', `${fmt(active.weightTarget,0)} lbs × ${p.multiplier}`, `${active.maintenance} cal`)}
+        ${detailRow(`Phase eating (${adjustWord})`, `${active.maintenance} cal ${goalType==='gain'?'+':'−'} ${p.deficit} cal`, `${active.eating} cal`)}
+      </div>
+      <p class="helper" style="text-align:center; margin-top:16px;">Add your height, age, sex, and activity level in Setup for a personalized BMR/TDEE-based estimate.</p>
+    `;
+    return;
+  }
+
+  const kg = fmt(p.startWeight/2.205, 1);
+  const cm = fmt(p.height*2.54, 1);
+  const sexLabel = p.sex==='male' ? 'Male' : 'Female';
+  const sexConst = p.sex==='male' ? '+ 5' : '− 161';
+  const bmrFormula = `(10 × ${kg}kg) + (6.25 × ${cm}cm) − (5 × ${p.age}) ${sexConst}`;
+  const activityLabelMap = {sedentary:'Sedentary (1.20×)', light:'Light activity (1.375×)', moderate:'Moderate activity (1.55×)', veryActive:'Very active (1.725×)'};
+  const startingCalories = calcStartingCalories(p);
+
+  body.innerHTML = `
+    <p class="page-sub">How your calorie targets are calculated, from your body stats down to today's number.</p>
+
+    <div class="section-title">Your inputs</div>
+    <div class="card stack">
+      ${detailRow('Weight', 'Starting weight', `${fmt(p.startWeight,0)} lbs`)}
+      ${detailRow('Height', 'Entered in Setup', `${fmt(p.height,0)} in`)}
+      ${detailRow('Age', 'Entered in Setup', `${fmt(p.age,0)}`)}
+      ${detailRow('Sex', 'Used for the BMR formula', sexLabel)}
+      ${detailRow('Activity level', 'Used for the TDEE multiplier', activityLabelMap[p.activityLevel] || p.activityLevel)}
+    </div>
+
+    <div class="section-title">BMR — resting calories</div>
+    <div class="card">
+      <div class="helper">Mifflin-St Jeor formula, converted to metric first (lbs ÷ 2.205 = kg, inches × 2.54 = cm).</div>
+      <div class="log-entry" style="margin-top:12px; align-items:flex-start;">
+        <div class="log-note mono" style="max-width:none;">${bmrFormula}</div>
+        <div class="log-weight">${p.bmr} cal</div>
+      </div>
+    </div>
+
+    <div class="section-title">TDEE — total daily energy</div>
+    <div class="card">
+      <div class="log-entry" style="align-items:flex-start;">
+        <div class="log-note mono" style="max-width:none;">${p.bmr} cal × ${(ACTIVITY_MULTIPLIERS[p.activityLevel]||1.2)}</div>
+        <div class="log-weight">${p.tdee} cal</div>
+      </div>
+    </div>
+
+    <div class="section-title">Calculated multiplier</div>
+    <div class="card">
+      <div class="log-entry" style="align-items:flex-start;">
+        <div class="log-note mono" style="max-width:none;">${p.tdee} cal ÷ ${fmt(p.startWeight,0)} lbs</div>
+        <div class="log-weight">${fmt(p.recommendedMultiplier)}x</div>
+      </div>
+      <div class="helper" style="margin-top:10px;">${p.calcMode==='multiplier' ? `You're using a manual override of ${p.multiplier}x instead of the calculated value.` : 'This is a reference number — your actual calories are calculated from TDEE, not this multiplier.'}</div>
+    </div>
+
+    <div class="section-title">Starting calories (Day 1)</div>
+    <div class="card">
+      ${detailRow(`TDEE ${adjustWord}`, `${p.tdee} cal ${goalType==='gain'?'+':goalType==='maintain'?'':'−'} ${goalType==='maintain'?'':p.deficit+' cal'}`, `${startingCalories} cal`)}
+      <div class="helper" style="margin-top:10px;">Fixed at setup — this doesn't change as your weight moves.</div>
+    </div>
+
+    <div class="section-title">Current phase (${fmt(active.weightTarget,0)} lbs)</div>
+    <div class="card stack">
+      ${detailRow('Phase maintenance', `${p.tdee} cal × (${fmt(active.weightTarget,0)} ÷ ${fmt(p.startWeight,0)})`, `${active.maintenance} cal`)}
+      ${detailRow(`Phase eating (${adjustWord})`, `${active.maintenance} cal ${goalType==='gain'?'+':goalType==='maintain'?'':'−'} ${goalType==='maintain'?'':p.deficit+' cal'}`, `${active.eating} cal`)}
+      <div class="helper" style="margin-top:2px;">This is today's target — it steps automatically as your rolling average moves into a new phase.</div>
+    </div>
   `;
 }
 
@@ -520,26 +916,47 @@ function renderTrailSVG(phases, cw){
   completedPathPts.forEach((pt,i)=>{ completedD += (i===0? `M ${pt.x} ${pt.y}` : ` L ${pt.x} ${pt.y}`); });
 
   const dots = points.map((pt,i)=>{
-    let fill, stroke, r=6;
-    if(i < activeIdx){ fill='var(--pine)'; stroke='var(--pine)'; }
-    else if(i === activeIdx){ fill='var(--gold)'; stroke='var(--gold)'; r=7.5; }
-    else { fill='var(--card)'; stroke='var(--moss)'; }
-    return `<circle cx="${pt.x}" cy="${pt.y}" r="${r}" fill="${fill}" stroke="${stroke}" stroke-width="1.5"/>`;
+    let fill, stroke, r=6, status;
+    if(i < activeIdx){ fill='var(--pine)'; stroke='var(--pine)'; status='Reached'; }
+    else if(i === activeIdx){ fill='var(--gold)'; stroke='var(--gold)'; r=7.5; status='Current'; }
+    else { fill='var(--card)'; stroke='var(--moss)'; status='Upcoming'; }
+    const label = `${status} · ${fmt(pt.ph.weightTarget,0)} lbs · ${pt.ph.eating} cal/day`;
+    return `<circle cx="${pt.x}" cy="${pt.y}" r="10" fill="transparent" style="cursor:pointer;" onmousemove="showTrailTip(event,'${label}')" onmouseleave="hideTrailTip()"></circle>
+      <circle cx="${pt.x}" cy="${pt.y}" r="${r}" fill="${fill}" stroke="${stroke}" stroke-width="1.5" style="pointer-events:none;"/>`;
   }).join('');
 
-  return `<svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg">
-    <path d="${pathD}" fill="none" stroke="var(--line)" stroke-width="3" stroke-dasharray="1 8" stroke-linecap="round"/>
-    <path d="${completedD}" fill="none" stroke="var(--pine)" stroke-width="3" stroke-linecap="round"/>
-    ${dots}
-  </svg>`;
+  return `<div class="trail-tip-wrap" style="position:relative;">
+    <svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg">
+      <path d="${pathD}" fill="none" stroke="var(--line)" stroke-width="3" stroke-dasharray="1 8" stroke-linecap="round"/>
+      <path d="${completedD}" fill="none" stroke="var(--pine)" stroke-width="3" stroke-linecap="round"/>
+      ${dots}
+    </svg>
+    <div id="trail-tip" class="mono" style="display:none; position:absolute; pointer-events:none; background:var(--pine-dark); color:#fff; font-size:11.5px; padding:5px 9px; border-radius:8px; white-space:nowrap; transform:translate(-50%,-115%); z-index:5;"></div>
+  </div>`;
 }
 
-function computeTrend(){
-  const logs = [...state.weightLogs].sort((a,b)=> new Date(a.date)-new Date(b.date));
-  if(logs.length < 2) return null;
-  const first = new Date(logs[0].date);
-  const xs = logs.map(l => (new Date(l.date) - first)/86400000);
-  const ys = logs.map(l => l.weight);
+function showTrailTip(evt, label){
+  const wrap = evt.currentTarget.closest('.trail-tip-wrap');
+  const tip = document.getElementById('trail-tip');
+  if(!wrap || !tip) return;
+  const rect = wrap.getBoundingClientRect();
+  tip.textContent = label;
+  tip.style.transform = 'translateY(-115%)';
+  tip.style.left = '0px';
+  tip.style.display = 'block';
+  const x = evt.clientX - rect.left + wrap.scrollLeft;
+  const half = tip.offsetWidth / 2;
+  const clampedX = Math.min(Math.max(x, half), wrap.scrollWidth - half);
+  tip.style.left = clampedX + 'px';
+  tip.style.top = (evt.clientY - rect.top) + 'px';
+  tip.style.transform = 'translate(-50%,-115%)';
+}
+function hideTrailTip(){
+  const tip = document.getElementById('trail-tip');
+  if(tip) tip.style.display = 'none';
+}
+
+function leastSquaresSlope(xs, ys){
   const n = xs.length;
   const sumX = xs.reduce((a,b)=>a+b,0);
   const sumY = ys.reduce((a,b)=>a+b,0);
@@ -548,8 +965,120 @@ function computeTrend(){
   const denom = (n*sumX2 - sumX*sumX);
   const slope = denom === 0 ? 0 : (n*sumXY - sumX*sumY) / denom; // lbs per day
   const intercept = (sumY - slope*sumX)/n;
+  return { slope, intercept };
+}
+
+function computeTrend(){
+  const logs = [...state.weightLogs].sort((a,b)=> new Date(a.date)-new Date(b.date));
+  if(logs.length < 2) return null;
+  const first = new Date(logs[0].date);
+  const xs = logs.map(l => (new Date(l.date) - first)/86400000);
+  const ys = logs.map(l => l.weight);
+  const { slope, intercept } = leastSquaresSlope(xs, ys);
   const slopePerWeek = slope*7;
   return { logs, xs, ys, slope, intercept, slopePerWeek };
+}
+
+// ---------------- completion estimate ----------------
+const COMPLETION_WINDOW_DAYS = 21;
+const MIN_COMPLETION_POINTS = 4;
+// A goal date is a long extrapolation from a short-term pace. Require a minimum
+// tracking history, and cap how far past that history the projection is allowed
+// to reach, so a few noisy days can't produce a wildly overconfident date.
+const MIN_GOAL_TRACKING_DAYS = 21;
+const MAX_GOAL_EXTRAPOLATION_RATIO = 6;
+
+// Uses only the most recent weigh-ins (not full history) so the estimate reflects
+// current pace, not a stale average from before a diet/activity change.
+function computeRecentTrend(windowDays=COMPLETION_WINDOW_DAYS){
+  const logs = [...state.weightLogs].sort((a,b)=> new Date(a.date)-new Date(b.date));
+  if(logs.length < 2) return null;
+  const lastDate = new Date(logs[logs.length-1].date);
+  const cutoff = lastDate.getTime() - windowDays*86400000;
+  const recentLogs = logs.filter(l=> new Date(l.date).getTime() >= cutoff);
+  if(recentLogs.length < MIN_COMPLETION_POINTS) return null;
+  const first = new Date(recentLogs[0].date);
+  const xs = recentLogs.map(l => (new Date(l.date) - first)/86400000);
+  const ys = recentLogs.map(l => l.weight);
+  const { slope } = leastSquaresSlope(xs, ys);
+  return { logs: recentLogs, slope, slopePerWeek: slope*7 };
+}
+
+function prettyDateObj(dt){
+  return dt.toLocaleDateString(undefined, {month:'short', day:'numeric'});
+}
+
+function estimateCompletion(){
+  const p = state.profile;
+  if(isGoalReached()) return { status:'reached' };
+  const recent = computeRecentTrend();
+  if(!recent) return { status:'insufficient' };
+
+  const dir = p.goalWeight >= p.startWeight ? 1 : -1;
+  const movingTowardGoal = dir>0 ? recent.slope > 0.02 : recent.slope < -0.02;
+  if(!movingTowardGoal) return { status:'stalled' };
+
+  const avgW = rollingAverageWeight();
+  const phases = computePhases(p);
+  const active = getActivePhase(phases, avgW);
+  const goalDistance = Math.max(0, dir>0 ? (p.goalWeight-avgW) : (avgW-p.goalWeight));
+  const phaseDistance = Math.max(0, dir>0 ? (active.weightTarget-avgW) : (avgW-active.weightTarget));
+  const pace = Math.abs(recent.slope);
+  const goalDays = Math.round(goalDistance/pace);
+  const phaseDays = Math.round(phaseDistance/pace);
+  const today = new Date();
+  const phaseDate = new Date(today.getTime() + phaseDays*86400000);
+
+  const allLogs = [...state.weightLogs].sort((a,b)=> new Date(a.date)-new Date(b.date));
+  const trackedDays = Math.round((new Date(allLogs[allLogs.length-1].date) - new Date(allLogs[0].date))/86400000);
+  const goalConfident = trackedDays >= MIN_GOAL_TRACKING_DAYS && goalDays <= trackedDays * MAX_GOAL_EXTRAPOLATION_RATIO;
+  const goalDate = goalConfident ? new Date(today.getTime() + goalDays*86400000) : null;
+
+  return { status:'ok', goalDays, goalDate, goalConfident, trackedDays, phaseDays, phaseDate, windowLogs: recent.logs.length };
+}
+
+function renderEstimatedTimeline(){
+  const est = estimateCompletion();
+  if(est.status==='reached') return '';
+  if(est.status==='insufficient'){
+    return `
+      <div class="section-title">Estimated timeline</div>
+      <div class="card"><div class="helper">Log at least ${MIN_COMPLETION_POINTS} weigh-ins within the last ${COMPLETION_WINDOW_DAYS} days to estimate when you'll hit your goal.</div></div>
+    `;
+  }
+  if(est.status==='stalled'){
+    return `
+      <div class="section-title">Estimated timeline</div>
+      <div class="card"><div class="helper">Your recent trend isn't moving toward your goal yet, so we can't estimate a completion date.</div></div>
+    `;
+  }
+  const goalCell = est.goalConfident ? `
+    <div class="mono" style="font-weight:600; font-size:16px; margin-top:4px;">${prettyDateObj(est.goalDate)}</div>
+    <div class="helper" style="margin-top:2px;">~${est.goalDays} day${est.goalDays===1?'':'s'} at current pace</div>
+  ` : `
+    <div class="mono" style="font-weight:600; font-size:16px; margin-top:4px;">—</div>
+    <div class="helper" style="margin-top:2px;">${est.trackedDays < MIN_GOAL_TRACKING_DAYS
+      ? `Log for ${MIN_GOAL_TRACKING_DAYS - est.trackedDays} more day${MIN_GOAL_TRACKING_DAYS-est.trackedDays===1?'':'s'} for a reliable estimate`
+      : `Too early to project this far out reliably`}</div>
+  `;
+
+  return `
+    <div class="section-title">Estimated timeline</div>
+    <div class="card">
+      <div class="row2">
+        <div>
+          <div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Next phase</div>
+          <div class="mono" style="font-weight:600; font-size:16px; margin-top:4px;">${est.phaseDays<=0? 'Any day now' : prettyDateObj(est.phaseDate)}</div>
+          <div class="helper" style="margin-top:2px;">${est.phaseDays<=0? 'Log to confirm' : `~${est.phaseDays} day${est.phaseDays===1?'':'s'} at current pace`}</div>
+        </div>
+        <div>
+          <div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Goal weight</div>
+          ${goalCell}
+        </div>
+      </div>
+      <div class="helper" style="margin-top:10px;">Based on your trend over your last ${est.windowLogs} weigh-ins. Updates as you log more.</div>
+    </div>
+  `;
 }
 
 function renderTrendChart(){
@@ -632,6 +1161,7 @@ function renderWeeklyInsight(){
 function renderRoadmap(){
   const p = state.profile;
   const phases = computePhases(p);
+  const dir = phaseDirection(phases);
   const avgW = rollingAverageWeight();
   const active = getActivePhase(phases, avgW);
   const el = document.getElementById('view-roadmap');
@@ -640,7 +1170,7 @@ function renderRoadmap(){
     <p class="page-sub">${phases.length} phases from ${fmt(p.startWeight,0)} to ${fmt(p.goalWeight,0)} lbs, stepping every ${p.interval} lbs. Progress is based on your ${Math.min(state.weightLogs.length, ROLLING_WINDOW)}-log rolling average of ${fmt(avgW)} lbs.</p>
     <div class="stack">
       ${phases.map(ph=>{
-        const reached = avgW <= ph.weightTarget;
+        const reached = dir>0 ? avgW >= ph.weightTarget : avgW <= ph.weightTarget;
         const isActive = ph.id===active.id && !isGoalReached();
         const badge = isActive? '<span class="badge badge-current">Current</span>' : reached? '<span class="badge badge-reached">Reached</span>' : '<span class="badge badge-upcoming">Upcoming</span>';
         const dotColor = isActive? 'var(--gold)' : reached? 'var(--pine)' : 'var(--line)';
@@ -982,43 +1512,106 @@ function escapeHtml(s){
 function renderSettings(){
   const p = state.profile;
   const el = document.getElementById('view-settings');
+  const pfx = 's-';
   el.innerHTML = `
     <h1 class="page-title">Setup</h1>
-    <p class="page-sub">Adjust your goal or strategy. Changing your goal weight regenerates your roadmap.</p>
-    <div class="card stack">
-      <div class="field" style="margin-bottom:0;">
-        <label>Name</label>
-        <input type="text" id="s-name" value="${p.name||''}">
-      </div>
-      <div class="row2">
-        <div class="field" style="margin-bottom:0;">
-          <label>Start weight (lbs)</label>
-          <input type="number" id="s-start" value="${p.startWeight}">
+    <p class="page-sub">Adjust your goal or strategy. Changing your weight, body stats, or goal regenerates your roadmap.</p>
+    <div class="stack">
+      <div class="card">
+        <div class="field">
+          <label>Name</label>
+          <input type="text" id="s-name" value="${p.name||''}">
         </div>
+        <div class="row2">
+          <div class="field">
+            <label>Current weight (lbs)</label>
+            <input type="number" id="s-current" value="${p.startWeight||''}">
+          </div>
+          <div class="field">
+            <label>Height (inches)</label>
+            <input type="number" id="s-height" value="${p.height||''}">
+          </div>
+        </div>
+        <div class="row2">
+          <div class="field" style="margin-bottom:0;">
+            <label>Age</label>
+            <input type="number" id="s-age" value="${p.age||''}">
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label>Sex</label>
+            <div class="chip-group" id="s-grp-sex">
+              <div class="chip ${p.sex==='male'?'active':''}" data-val="male">Male</div>
+              <div class="chip ${p.sex==='female'?'active':''}" data-val="female">Female</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
         <div class="field" style="margin-bottom:0;">
+          <label>Activity level</label>
+          <div class="chip-group" id="s-grp-activity">
+            ${ACTIVITY_OPTIONS.map(o=>`<div class="chip ${(p.activityLevel||'sedentary')===o.val?'active':''}" data-val="${o.val}">${o.label}</div>`).join('')}
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="field">
+          <label>Goal type</label>
+          <div class="chip-group" id="s-grp-goaltype">
+            ${GOAL_TYPE_OPTIONS.map(o=>`<div class="chip ${(p.goalType||'loss')===o.val?'active':''}" data-val="${o.val}">${o.label}</div>`).join('')}
+          </div>
+        </div>
+        <div class="field" id="s-goal-weight-field" style="margin-bottom:0;">
           <label>Goal weight (lbs)</label>
-          <input type="number" id="s-goal" value="${p.goalWeight}">
+          <input type="number" id="s-goal" value="${p.goalWeight||''}">
         </div>
       </div>
-      <div class="field" style="margin-bottom:0;">
-        <label>Calorie multiplier</label>
-        <div class="chip-group" id="s-grp-mult">
-          ${[10,11,12,13,14,15].map(v=>`<div class="chip ${p.multiplier==v?'active':''}" data-val="${v}">${v}×</div>`).join('')}
+
+      <div class="card">
+        <label style="margin-bottom:10px;">Your calorie estimate</label>
+        <div id="s-calc-preview"></div>
+      </div>
+
+      <div class="card">
+        <div style="display:flex; justify-content:space-between; align-items:center; cursor:pointer;" id="s-advanced-toggle">
+          <label style="margin-bottom:0;">Advanced settings</label>
+          <span class="helper" id="s-advanced-label" style="margin-top:0;">Customize strategy</span>
+        </div>
+        <div id="s-advanced-body" class="hidden" style="margin-top:14px;">
+          <div class="field">
+            <label>Calculation mode</label>
+            <div class="chip-group" id="s-grp-calcmode">
+              <div class="chip ${p.calcMode!=='multiplier'?'active':''}" data-val="auto">Automatic</div>
+              <div class="chip ${p.calcMode==='multiplier'?'active':''}" data-val="multiplier">Manual multiplier</div>
+            </div>
+          </div>
+          <div class="field" id="s-multiplier-field">
+            <label>Calorie multiplier</label>
+            <div class="chip-group" id="s-grp-multiplier">
+              ${[10,11,12,13,14,15].map(v=>`<div class="chip ${(p.multiplier||12)==v?'active':''}" data-val="${v}">${v}×</div>`).join('')}
+            </div>
+          </div>
+          <div class="field">
+            <label>Daily deficit / surplus</label>
+            <div class="chip-group" id="s-grp-deficit">
+              ${DEFICIT_PRESETS.map(v=>`<div class="chip ${p.deficit==v?'active':''}" data-val="${v}">${v} cal</div>`).join('')}
+              <div class="chip ${p.deficit && !DEFICIT_PRESETS.includes(p.deficit)?'active':''}" data-val="custom">Custom</div>
+            </div>
+            <input type="number" id="s-deficit-custom" class="${p.deficit && !DEFICIT_PRESETS.includes(p.deficit)?'':'hidden'}" style="margin-top:8px;" placeholder="Custom calories" value="${p.deficit && !DEFICIT_PRESETS.includes(p.deficit)? p.deficit : ''}">
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label>Adjust every</label>
+            <div class="chip-group" id="s-grp-interval">
+              ${[5,10].map(v=>`<div class="chip ${(p.interval||5)==v?'active':''}" data-val="${v}">${v} lbs</div>`).join('')}
+            </div>
+          </div>
         </div>
       </div>
-      <div class="field" style="margin-bottom:0;">
-        <label>Daily deficit</label>
-        <div class="chip-group" id="s-grp-deficit">
-          ${[300,500,750,1000].map(v=>`<div class="chip ${p.deficit==v?'active':''}" data-val="${v}">${v} cal</div>`).join('')}
-        </div>
-      </div>
-      <div class="field" style="margin-bottom:0;">
-        <label>Adjust every</label>
-        <div class="chip-group" id="s-grp-interval">
-          ${[5,10].map(v=>`<div class="chip ${p.interval==v?'active':''}" data-val="${v}">${v} lbs</div>`).join('')}
-        </div>
-      </div>
+
       <button class="btn btn-primary" id="btn-save-settings">Save changes</button>
+      <div id="s-goal-error" class="helper" style="color:var(--danger); display:none;">Goal weight must be at least 5 lbs from your current weight, in the right direction for your goal type.</div>
     </div>
 
     <div class="section-title">Data</div>
@@ -1026,24 +1619,74 @@ function renderSettings(){
     <p class="helper" style="text-align:center;">This is a personal planning tool, not medical advice.</p>
   `;
 
-  function bindChips(id){
-    const g = document.getElementById(id);
-    g.querySelectorAll('.chip').forEach(c=> c.onclick=()=>{ g.querySelectorAll('.chip').forEach(x=>x.classList.remove('active')); c.classList.add('active'); });
+  function bindChips(groupId, onChange){
+    const g = document.getElementById(groupId);
+    g.querySelectorAll('.chip').forEach(c=>{
+      c.onclick = ()=>{ g.querySelectorAll('.chip').forEach(x=>x.classList.remove('active')); c.classList.add('active'); onChange && onChange(); };
+    });
   }
-  bindChips('s-grp-mult'); bindChips('s-grp-deficit'); bindChips('s-grp-interval');
+
+  function refresh(){ updateSetupPreview(pfx); }
+
+  bindChips('s-grp-sex', refresh);
+  bindChips('s-grp-activity', refresh);
+  bindChips('s-grp-calcmode', ()=>{
+    const mode = document.querySelector('#s-grp-calcmode .chip.active').dataset.val;
+    document.getElementById('s-multiplier-field').style.opacity = mode==='multiplier' ? '1' : '0.45';
+    refresh();
+  });
+  bindChips('s-grp-multiplier', refresh);
+  bindChips('s-grp-interval', refresh);
+  bindChips('s-grp-deficit', ()=>{
+    const isCustom = document.querySelector('#s-grp-deficit .chip.active').dataset.val==='custom';
+    document.getElementById('s-deficit-custom').classList.toggle('hidden', !isCustom);
+    refresh();
+  });
+  bindChips('s-grp-goaltype', ()=>{
+    const goalType = document.querySelector('#s-grp-goaltype .chip.active').dataset.val;
+    document.getElementById('s-goal-weight-field').classList.toggle('hidden', goalType==='maintain');
+    refresh();
+  });
+
+  document.getElementById('s-current').addEventListener('input', refresh);
+  document.getElementById('s-height').addEventListener('input', refresh);
+  document.getElementById('s-age').addEventListener('input', refresh);
+  document.getElementById('s-deficit-custom').addEventListener('input', refresh);
+
+  document.getElementById('s-advanced-toggle').onclick = ()=>{
+    const body = document.getElementById('s-advanced-body');
+    const expanded = !body.classList.contains('hidden');
+    body.classList.toggle('hidden', expanded);
+    document.getElementById('s-advanced-label').textContent = expanded ? 'Customize strategy' : 'Automatic calculation';
+  };
+
+  if((p.goalType||'loss')==='maintain'){
+    document.getElementById('s-goal-weight-field').classList.add('hidden');
+  }
+  const initMode = document.querySelector('#s-grp-calcmode .chip.active').dataset.val;
+  document.getElementById('s-multiplier-field').style.opacity = initMode==='multiplier' ? '1' : '0.45';
+
+  refresh();
 
   document.getElementById('btn-save-settings').onclick = async ()=>{
-    const start = parseFloat(document.getElementById('s-start').value);
-    const goal = parseFloat(document.getElementById('s-goal').value);
-    if(!start || !goal || goal>=start || (start-goal)<10){ showToast('Goal weight must be at least 10 lbs below start weight.'); return; }
+    const name = document.getElementById('s-name').value.trim();
+    const v = readSetupFormValues(pfx);
+    const err = document.getElementById('s-goal-error');
+
+    const diff = v.goalWeight - v.startWeight;
+    const validDirection = v.goalType==='gain' ? diff >= 5 : v.goalType==='maintain' ? true : diff <= -5;
+    if(!v.startWeight || !v.height || !v.age || !v.sex || !v.activityLevel || !v.goalWeight || !validDirection){
+      err.style.display='block';
+      return;
+    }
+    err.style.display='none';
+
     state.profile = {
       ...state.profile,
-      name: document.getElementById('s-name').value.trim(),
-      startWeight: start,
-      goalWeight: goal,
-      multiplier: parseFloat(document.querySelector('#s-grp-mult .chip.active').dataset.val),
-      deficit: parseFloat(document.querySelector('#s-grp-deficit .chip.active').dataset.val),
-      interval: parseFloat(document.querySelector('#s-grp-interval .chip.active').dataset.val),
+      name, startWeight:v.startWeight, goalWeight:v.goalWeight,
+      height:v.height, age:v.age, sex:v.sex, activityLevel:v.activityLevel, goalType:v.goalType,
+      multiplier:v.multiplier, recommendedMultiplier:v.recommendedMultiplier, bmr:v.bmr, tdee:v.tdee,
+      calcMode:v.calcMode, deficit:v.deficit, interval:v.interval,
     };
     await saveState();
     showToast('Roadmap updated.');
