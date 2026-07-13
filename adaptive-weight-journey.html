@@ -295,6 +295,37 @@ async function saveState(){
   catch(e){ console.error('save failed', e); }
 }
 
+function exportData(){
+  const blob = new Blob([JSON.stringify(state, null, 2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `adaptive-weight-journey-${todayStr()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function importDataFile(file){
+  const reader = new FileReader();
+  reader.onload = async (e) => {
+    let parsed;
+    try{ parsed = JSON.parse(e.target.result); }
+    catch(err){ showToast("Could not read that file — make sure it's a valid export."); return; }
+    if(!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.weightLogs) || !Array.isArray(parsed.nutritionLogs)){
+      showToast("That file doesn't look like a valid export.");
+      return;
+    }
+    if(!confirm('This will replace all current data on this device with the imported file. Continue?')) return;
+    state = { profile: parsed.profile||null, weightLogs: parsed.weightLogs, nutritionLogs: parsed.nutritionLogs, ackPhaseId: parsed.ackPhaseId||null };
+    await saveState();
+    showToast('Data imported.');
+    boot();
+  };
+  reader.readAsText(file);
+}
+
 // ---------------- calorie engine ----------------
 const ACTIVITY_MULTIPLIERS = { sedentary:1.20, light:1.375, moderate:1.55, veryActive:1.725 };
 const CALORIE_FLOOR = { male:1500, female:1200 };
@@ -325,6 +356,14 @@ function calcStartingCalories(p){
   return Math.round(p.tdee - p.deficit);
 }
 
+function calcProteinGoal(p, weightLbs){
+  const goalType = p.goalType || 'loss';
+  let perLb;
+  if(goalType==='gain' || goalType==='maintain') perLb = 0.8;
+  else perLb = p.deficit >= 750 ? 1.1 : p.deficit >= 500 ? 1.0 : 0.9; // more aggressive cuts need more protein to preserve muscle
+  return Math.round(weightLbs * perLb);
+}
+
 function calorieFloor(p){
   return CALORIE_FLOOR[p.sex] || CALORIE_FLOOR.female;
 }
@@ -333,20 +372,101 @@ function calorieWarning(p, calories){
   return calories < calorieFloor(p);
 }
 
+// TDEE recalculated fresh at a given weight (not scaled proportionally from the
+// starting TDEE) — BMR has a large weight-independent component (height, age,
+// sex), so proportional scaling understates calories at lower weights and
+// overstates them at higher weights the further you are from your start weight.
+function tdeeAtWeight(p, weightLbs, calibrationFactor){
+  const bmr = calcBMR(weightLbs, p.height, p.age, p.sex);
+  const tdee = calcTDEE(bmr, p.activityLevel);
+  return Math.round(tdee * (calibrationFactor || 1));
+}
+
+// ---------------- metabolic calibration ----------------
+// Compares your logged calories vs. your actual weight trend to see whether your
+// real-world metabolism runs above or below the population formula, and nudges
+// future calorie targets accordingly. Purely derived from logs each time — nothing
+// persisted, so it's never stale.
+const CALIBRATION_WINDOW_DAYS = 28;
+const MIN_CALIBRATION_NUTRITION_LOGS = 10;
+const CALIBRATION_MIN_FACTOR = 0.75;
+const CALIBRATION_MAX_FACTOR = 1.25;
+const CAL_PER_LB = 3500;
+
+function computeCalibration(){
+  const p = state.profile;
+  if(!hasBodyStats(p)) return null;
+
+  const nutrition = [...state.nutritionLogs].sort((a,b)=> new Date(a.date)-new Date(b.date));
+  if(nutrition.length===0) return null;
+  const lastNutritionDate = new Date(nutrition[nutrition.length-1].date);
+  const nCutoff = lastNutritionDate.getTime() - CALIBRATION_WINDOW_DAYS*86400000;
+  const recentNutrition = nutrition.filter(n=> new Date(n.date).getTime() >= nCutoff);
+  if(recentNutrition.length < MIN_CALIBRATION_NUTRITION_LOGS) return null;
+  const avgDailyEaten = recentNutrition.reduce((s,n)=>s+n.calories,0)/recentNutrition.length;
+
+  const weights = [...state.weightLogs].sort((a,b)=> new Date(a.date)-new Date(b.date));
+  if(weights.length < MIN_COMPLETION_POINTS) return null;
+  const lastWeightDate = new Date(weights[weights.length-1].date);
+  const wCutoff = lastWeightDate.getTime() - CALIBRATION_WINDOW_DAYS*86400000;
+  const recentWeights = weights.filter(l=> new Date(l.date).getTime() >= wCutoff);
+  if(recentWeights.length < MIN_COMPLETION_POINTS) return null;
+
+  const first = new Date(recentWeights[0].date);
+  const xs = recentWeights.map(l=> (new Date(l.date)-first)/86400000);
+  const ys = recentWeights.map(l=> l.weight);
+  const { slope } = leastSquaresSlope(xs, ys); // lbs/day, negative = losing
+  const avgWeightInWindow = ys.reduce((a,b)=>a+b,0)/ys.length;
+
+  const calcTdee = tdeeAtWeight(p, avgWeightInWindow, 1);
+  // Energy balance: actual calories burned = calories eaten - (weight change converted to calories)
+  const actualTdee = avgDailyEaten - (slope * CAL_PER_LB);
+  const rawFactor = actualTdee / calcTdee;
+  const calibrationFactor = Math.min(CALIBRATION_MAX_FACTOR, Math.max(CALIBRATION_MIN_FACTOR, rawFactor));
+
+  return {
+    calibrationFactor,
+    actualTdee: Math.round(actualTdee),
+    calcTdee: Math.round(calcTdee),
+    avgDailyEaten: Math.round(avgDailyEaten),
+    windowDays: CALIBRATION_WINDOW_DAYS,
+    nutritionLogs: recentNutrition.length,
+    weightLogs: recentWeights.length,
+    clamped: Math.abs(rawFactor-calibrationFactor) > 0.001,
+  };
+}
+
 // ---------------- roadmap engine ----------------
-function computePhaseMaintenance(p, weightTarget){
-  if(p.calcMode!=='multiplier' && hasBodyStats(p) && p.tdee){
-    return Math.round(p.tdee * (weightTarget / p.startWeight));
+// Reduces the deficit/surplus as you approach your goal (final third of the
+// journey), matching common coaching guidance to ease off an aggressive cut
+// as you get leaner so you preserve more muscle.
+const TAPER_START_FRACTION = 0.66;
+const TAPER_MIN_FACTOR = 0.6;
+
+function taperedAdjustment(p, weightTarget){
+  if(!p.taperDeficit || (p.goalType||'loss')==='maintain') return p.deficit;
+  const totalRange = Math.abs(p.goalWeight - p.startWeight) || 1;
+  const progressed = Math.abs(weightTarget - p.startWeight) / totalRange; // 0 at start .. 1 at goal
+  if(progressed <= TAPER_START_FRACTION) return p.deficit;
+  const t = Math.min(1, (progressed - TAPER_START_FRACTION) / (1 - TAPER_START_FRACTION));
+  const factor = 1 - (1-TAPER_MIN_FACTOR)*t;
+  return Math.round(p.deficit * factor);
+}
+
+function computePhaseMaintenance(p, weightTarget, calibrationFactor){
+  if(p.calcMode!=='multiplier' && hasBodyStats(p)){
+    return tdeeAtWeight(p, weightTarget, calibrationFactor);
   }
   return Math.round(weightTarget * p.multiplier);
 }
 
-function computePhaseEating(p, weightTarget){
-  const maintenance = computePhaseMaintenance(p, weightTarget);
+function computePhaseEating(p, weightTarget, calibrationFactor){
+  const maintenance = computePhaseMaintenance(p, weightTarget, calibrationFactor);
   const goalType = p.goalType || 'loss';
-  if(goalType==='gain') return Math.round(maintenance + p.deficit);
+  const adjust = taperedAdjustment(p, weightTarget);
+  if(goalType==='gain') return Math.round(maintenance + adjust);
   if(goalType==='maintain') return maintenance;
-  return Math.round(maintenance - p.deficit);
+  return Math.round(maintenance - adjust);
 }
 
 function computePhases(p){
@@ -360,11 +480,13 @@ function computePhases(p){
   }
   targets.push(p.goalWeight);
   const dedup = [...new Set(targets)].sort((a,b)=> dir>0 ? a-b : b-a);
+  const calibration = computeCalibration();
+  const calibrationFactor = calibration ? calibration.calibrationFactor : 1;
   return dedup.map((t,i)=>({
     id:i+1,
     weightTarget:t,
-    maintenance: computePhaseMaintenance(p,t),
-    eating: computePhaseEating(p,t)
+    maintenance: computePhaseMaintenance(p,t,calibrationFactor),
+    eating: computePhaseEating(p,t,calibrationFactor)
   }));
 }
 
@@ -389,6 +511,20 @@ function rollingAverageWeight(n=ROLLING_WINDOW){
   return recent.reduce((s,l)=>s+l.weight,0)/recent.length;
 }
 
+// Flags a new weigh-in that's an implausible jump from the last logged entry (most
+// often a typo), scaled by how many days have passed since that entry so a real
+// change after a long gap isn't mistaken for a data-entry error.
+function findWeightOutlier(newWeight, date, excludeId){
+  const others = state.weightLogs.filter(l=> l.id !== excludeId);
+  if(others.length===0) return null;
+  const sorted = [...others].sort((a,b)=> new Date(b.date)-new Date(a.date));
+  const mostRecent = sorted[0];
+  const daysSince = Math.max(1, Math.abs((new Date(date) - new Date(mostRecent.date))/86400000));
+  const threshold = Math.min(40, 8 + daysSince*1.5);
+  const diff = Math.abs(newWeight - mostRecent.weight);
+  return diff > threshold ? { mostRecent, diff } : null;
+}
+
 function getActivePhase(phases, w){
   const dir = phaseDirection(phases);
   for(const ph of phases){
@@ -407,7 +543,13 @@ function isGoalReached(){
 
 // ---------------- utils ----------------
 function fmt(n, d=1){ return Number(n).toFixed(d).replace(/\.0$/,''); }
-function todayStr(){ return new Date().toISOString().slice(0,10); }
+function todayStr(){
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth()+1).padStart(2,'0');
+  const day = String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${day}`;
+}
 function prettyDate(d){
   const dt = new Date(d+'T00:00:00');
   return dt.toLocaleDateString(undefined, {month:'short', day:'numeric'});
@@ -449,6 +591,7 @@ function readSetupFormValues(prefix){
   const deficitCustom = parseFloat(val('deficit-custom')?.value);
   const deficit = deficitChip==='custom' ? (deficitCustom||500) : parseFloat(deficitChip||500);
   const interval = parseFloat(document.querySelector(`#${prefix}grp-interval .chip.active`)?.dataset.val || 5);
+  const taperDeficit = document.querySelector(`#${prefix}grp-taper .chip.active`)?.dataset.val === 'on';
 
   let bmr=null, tdee=null, recommendedMultiplier=null;
   if(startWeight && height && age && sex && activityLevel){
@@ -460,7 +603,7 @@ function readSetupFormValues(prefix){
     ? parseFloat(multiplierChip || (recommendedMultiplier? Math.round(recommendedMultiplier):12))
     : (recommendedMultiplier ? Math.round(recommendedMultiplier) : parseFloat(multiplierChip||12));
 
-  return { startWeight, height, age, sex, activityLevel, goalType, goalWeight, calcMode, multiplier, deficit, interval, bmr, tdee, recommendedMultiplier };
+  return { startWeight, height, age, sex, activityLevel, goalType, goalWeight, calcMode, multiplier, deficit, interval, taperDeficit, bmr, tdee, recommendedMultiplier };
 }
 
 function updateSetupPreview(prefix){
@@ -586,12 +729,20 @@ function renderSetupScreen(){
             </div>
             <input type="number" id="f-deficit-custom" class="hidden" style="margin-top:8px;" placeholder="Custom calories" value="${p.deficit && !DEFICIT_PRESETS.includes(p.deficit)? p.deficit : ''}" inputmode="decimal">
           </div>
-          <div class="field" style="margin-bottom:0;">
+          <div class="field">
             <label>Adjust every</label>
             <div class="chip-group" id="f-grp-interval">
               ${[5,10].map(v=>`<div class="chip ${((p.interval||5)==v)?'active':''}" data-val="${v}">${v} lbs</div>`).join('')}
             </div>
             <div class="helper">Your calorie target steps as you reach each weight milestone.</div>
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label>Taper deficit near goal</label>
+            <div class="chip-group" id="f-grp-taper">
+              <div class="chip ${!p.taperDeficit?'active':''}" data-val="off">Off</div>
+              <div class="chip ${p.taperDeficit?'active':''}" data-val="on">On</div>
+            </div>
+            <div class="helper">Gradually eases your deficit/surplus by up to 40% over the final third of your journey, to help preserve muscle as you get closer to goal.</div>
           </div>
         </div>
       </div>
@@ -621,6 +772,7 @@ function renderSetupScreen(){
   });
   bindChips('f-grp-multiplier', refresh);
   bindChips('f-grp-interval', refresh);
+  bindChips('f-grp-taper', refresh);
   bindChips('f-grp-deficit', ()=>{
     const isCustom = document.querySelector('#f-grp-deficit .chip.active').dataset.val==='custom';
     document.getElementById('f-deficit-custom').classList.toggle('hidden', !isCustom);
@@ -668,7 +820,7 @@ function renderSetupScreen(){
       name, startWeight:v.startWeight, goalWeight:v.goalWeight,
       height:v.height, age:v.age, sex:v.sex, activityLevel:v.activityLevel, goalType:v.goalType,
       multiplier:v.multiplier, recommendedMultiplier:v.recommendedMultiplier, bmr:v.bmr, tdee:v.tdee,
-      calcMode:v.calcMode, deficit:v.deficit, interval:v.interval, createdDate: todayStr()
+      calcMode:v.calcMode, deficit:v.deficit, interval:v.interval, taperDeficit:v.taperDeficit, createdDate: todayStr()
     };
     state.weightLogs = state.weightLogs.length ? state.weightLogs : [{id:cryptoId(), date: todayStr(), weight: v.startWeight, notes:''}];
     state.ackPhaseId = 1;
@@ -700,7 +852,10 @@ function renderDashboard(){
   const eatenToday = todaysNutrition ? todaysNutrition.calories : 0;
   const remainingCals = active.eating - eatenToday;
   const tooLow = hasBodyStats(p) && calorieWarning(p, active.eating);
-  const deficitLabel = goalType==='gain' ? `${p.deficit} cal surplus` : goalType==='maintain' ? 'Maintaining' : `${p.deficit} cal deficit`;
+  const currentAdjust = taperedAdjustment(p, active.weightTarget);
+  const taperedNote = p.taperDeficit && currentAdjust !== p.deficit ? ' (tapered)' : '';
+  const deficitLabel = goalType==='gain' ? `${currentAdjust} cal surplus${taperedNote}` : goalType==='maintain' ? 'Maintaining' : `${currentAdjust} cal deficit${taperedNote}`;
+  const calibration = hasBodyStats(p) ? computeCalibration() : null;
 
   const el = document.getElementById('view-dashboard');
   el.innerHTML = `
@@ -758,7 +913,7 @@ function renderDashboard(){
         <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Current strategy</div><div class="mono" style="font-weight:600; margin-top:4px;">${deficitLabel}</div></div>
         <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Calculated multiplier</div><div class="mono" style="font-weight:600; margin-top:4px;">${fmt(p.recommendedMultiplier)}x</div></div>
       </div>
-      <div class="helper" style="margin-top:10px;">Starting calories were ${calcStartingCalories(p)} cal/day at ${fmt(p.startWeight,0)} lbs.</div>
+      <div class="helper" style="margin-top:10px;">Starting calories were ${calcStartingCalories(p)} cal/day at ${fmt(p.startWeight,0)} lbs.${calibration? ` Calorie targets are calibrated ${calibration.calibrationFactor>=1?'up':'down'} ${fmt(Math.abs((calibration.calibrationFactor-1)*100),1)}% based on your logged results.` : ''}</div>
       <button class="btn btn-ghost" style="margin-top:12px;" onclick="openCalcDetails()">View calculation details</button>
     </div>
     ` : `
@@ -820,11 +975,12 @@ function renderCalcDetails(){
   const adjustWord = goalType==='gain' ? 'surplus' : goalType==='maintain' ? 'adjustment' : 'deficit';
 
   if(!hasBodyStats(p) || !p.tdee){
+    const legacyAdjust = taperedAdjustment(p, active.weightTarget);
     body.innerHTML = `
       <p class="page-sub">This profile doesn't have body stats yet, so calories are estimated with a flat weight × multiplier formula instead of BMR/TDEE.</p>
       <div class="card stack">
         ${detailRow('Phase maintenance', `${fmt(active.weightTarget,0)} lbs × ${p.multiplier}`, `${active.maintenance} cal`)}
-        ${detailRow(`Phase eating (${adjustWord})`, `${active.maintenance} cal ${goalType==='gain'?'+':'−'} ${p.deficit} cal`, `${active.eating} cal`)}
+        ${detailRow(`Phase eating (${adjustWord})`, `${active.maintenance} cal ${goalType==='gain'?'+':'−'} ${legacyAdjust} cal`, `${active.eating} cal`)}
       </div>
       <p class="helper" style="text-align:center; margin-top:16px;">Add your height, age, sex, and activity level in Setup for a personalized BMR/TDEE-based estimate.</p>
     `;
@@ -838,6 +994,11 @@ function renderCalcDetails(){
   const bmrFormula = `(10 × ${kg}kg) + (6.25 × ${cm}cm) − (5 × ${p.age}) ${sexConst}`;
   const activityLabelMap = {sedentary:'Sedentary (1.20×)', light:'Light activity (1.375×)', moderate:'Moderate activity (1.55×)', veryActive:'Very active (1.725×)'};
   const startingCalories = calcStartingCalories(p);
+  const calibration = computeCalibration();
+  const calibrationFactor = calibration ? calibration.calibrationFactor : 1;
+  const phaseBmr = calcBMR(active.weightTarget, p.height, p.age, p.sex);
+  const phaseAdjust = taperedAdjustment(p, active.weightTarget);
+  const isTapered = p.taperDeficit && phaseAdjust !== p.deficit;
 
   body.innerHTML = `
     <p class="page-sub">How your calorie targets are calculated, from your body stats down to today's number.</p>
@@ -883,11 +1044,25 @@ function renderCalcDetails(){
       <div class="helper" style="margin-top:10px;">Fixed at setup — this doesn't change as your weight moves.</div>
     </div>
 
+    <div class="section-title">Metabolic calibration</div>
+    ${calibration ? `
+    <div class="card">
+      <div class="row2">
+        <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Formula estimate</div><div class="mono" style="font-weight:600; margin-top:4px;">${calibration.calcTdee} cal</div></div>
+        <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Your actual pace implies</div><div class="mono" style="font-weight:600; margin-top:4px;">${calibration.actualTdee} cal</div></div>
+      </div>
+      <div class="helper" style="margin-top:10px;">Based on ${calibration.avgDailyEaten} cal/day eaten vs. your weight trend, over your last ${calibration.nutritionLogs} food logs and ${calibration.weightLogs} weigh-ins (${calibration.windowDays}-day window). Your calorie targets below are adjusted ${calibrationFactor>=1?'up':'down'} by ${fmt(Math.abs((calibrationFactor-1)*100),1)}% to match your real-world results.${calibration.clamped? ' (Capped at a 25% adjustment for stability.)':''}</div>
+    </div>
+    ` : `
+    <div class="card"><div class="helper">Log both your weight and calories consistently for a few weeks (at least ${MIN_CALIBRATION_NUTRITION_LOGS} food logs within a ${CALIBRATION_WINDOW_DAYS}-day window) and we'll compare your actual results to the formula estimate to fine-tune your targets.</div></div>
+    `}
+
     <div class="section-title">Current phase (${fmt(active.weightTarget,0)} lbs)</div>
     <div class="card stack">
-      ${detailRow('Phase maintenance', `${p.tdee} cal × (${fmt(active.weightTarget,0)} ÷ ${fmt(p.startWeight,0)})`, `${active.maintenance} cal`)}
-      ${detailRow(`Phase eating (${adjustWord})`, `${active.maintenance} cal ${goalType==='gain'?'+':goalType==='maintain'?'':'−'} ${goalType==='maintain'?'':p.deficit+' cal'}`, `${active.eating} cal`)}
-      <div class="helper" style="margin-top:2px;">This is today's target — it steps automatically as your rolling average moves into a new phase.</div>
+      ${detailRow('Phase BMR', `Recalculated at ${fmt(active.weightTarget,0)} lbs (same formula, new weight)`, `${phaseBmr} cal`)}
+      ${detailRow('Phase TDEE', `${phaseBmr} cal × ${ACTIVITY_MULTIPLIERS[p.activityLevel]}${calibration? ` × ${fmt(calibrationFactor,2)} calibration`:''}`, `${active.maintenance} cal`)}
+      ${detailRow(`Phase eating (${adjustWord})`, `${active.maintenance} cal ${goalType==='gain'?'+':goalType==='maintain'?'':'−'} ${goalType==='maintain'?'':phaseAdjust+' cal'}${isTapered?' (tapered)':''}`, `${active.eating} cal`)}
+      <div class="helper" style="margin-top:2px;">This is today's target — it steps automatically as your rolling average moves into a new phase, recalculated fresh at each phase's weight rather than scaled from your starting TDEE.</div>
     </div>
   `;
 }
@@ -1164,10 +1339,15 @@ function renderRoadmap(){
   const dir = phaseDirection(phases);
   const avgW = rollingAverageWeight();
   const active = getActivePhase(phases, avgW);
+  const calibration = hasBodyStats(p) ? computeCalibration() : null;
+  const notes = [];
+  if(calibration) notes.push(`calorie targets below are calibrated ${calibration.calibrationFactor>=1?'up':'down'} ${fmt(Math.abs((calibration.calibrationFactor-1)*100),1)}% based on your logged results`);
+  if(p.taperDeficit) notes.push(`${(p.goalType||'loss')==='gain'?'surplus':'deficit'} tapers by up to 40% over the final third of your journey`);
   const el = document.getElementById('view-roadmap');
   el.innerHTML = `
     <h1 class="page-title">Roadmap</h1>
     <p class="page-sub">${phases.length} phases from ${fmt(p.startWeight,0)} to ${fmt(p.goalWeight,0)} lbs, stepping every ${p.interval} lbs. Progress is based on your ${Math.min(state.weightLogs.length, ROLLING_WINDOW)}-log rolling average of ${fmt(avgW)} lbs.</p>
+    ${notes.length ? `<div class="banner" style="margin-bottom:16px;">📐 <div>${notes.join('; ')}.</div></div>` : ''}
     <div class="stack">
       ${phases.map(ph=>{
         const reached = dir>0 ? avgW >= ph.weightTarget : avgW <= ph.weightTarget;
@@ -1261,6 +1441,12 @@ function renderWeightLogView(){
     const notes = document.getElementById('log-notes').value.trim();
     if(!weight || weight<=0){ showToast('Enter a valid weight first.'); return; }
 
+    const existingSameDate = state.weightLogs.find(l=>l.date===date);
+    const outlier = findWeightOutlier(weight, date, existingSameDate?.id);
+    if(outlier && !confirm(`That's ${fmt(outlier.diff,1)} lbs from your last entry (${fmt(outlier.mostRecent.weight)} lbs on ${prettyDate(outlier.mostRecent.date)}). Save ${fmt(weight)} lbs anyway?`)){
+      return;
+    }
+
     const phasesBefore = computePhases(state.profile);
     const activeBefore = getActivePhase(phasesBefore, rollingAverageWeight());
 
@@ -1285,7 +1471,7 @@ function renderCaloriesLogView(){
   const phases = computePhases(p);
   const active = getActivePhase(phases, rollingAverageWeight());
   const calorieTarget = isGoalReached() ? active.eating : active.eating;
-  const proteinGoal = Math.round(p.goalWeight * 1);
+  const proteinGoal = calcProteinGoal(p, rollingAverageWeight());
   const sorted = [...state.nutritionLogs].sort((a,b)=> new Date(b.date)-new Date(a.date));
 
   container.innerHTML = `
@@ -1484,6 +1670,11 @@ async function saveEditLog(id){
   const entry = state.weightLogs.find(l=>l.id===id);
   if(!entry) return;
 
+  const outlier = findWeightOutlier(weight, date, id);
+  if(outlier && !confirm(`That's ${fmt(outlier.diff,1)} lbs from your last entry (${fmt(outlier.mostRecent.weight)} lbs on ${prettyDate(outlier.mostRecent.date)}). Save ${fmt(weight)} lbs anyway?`)){
+    return;
+  }
+
   // if another entry already exists on the new date, merge by removing the duplicate
   state.weightLogs = state.weightLogs.filter(l=> l.id===id || l.date!==date);
   entry.date = date;
@@ -1601,11 +1792,19 @@ function renderSettings(){
             </div>
             <input type="number" id="s-deficit-custom" class="${p.deficit && !DEFICIT_PRESETS.includes(p.deficit)?'':'hidden'}" style="margin-top:8px;" placeholder="Custom calories" value="${p.deficit && !DEFICIT_PRESETS.includes(p.deficit)? p.deficit : ''}">
           </div>
-          <div class="field" style="margin-bottom:0;">
+          <div class="field">
             <label>Adjust every</label>
             <div class="chip-group" id="s-grp-interval">
               ${[5,10].map(v=>`<div class="chip ${(p.interval||5)==v?'active':''}" data-val="${v}">${v} lbs</div>`).join('')}
             </div>
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label>Taper deficit near goal</label>
+            <div class="chip-group" id="s-grp-taper">
+              <div class="chip ${!p.taperDeficit?'active':''}" data-val="off">Off</div>
+              <div class="chip ${p.taperDeficit?'active':''}" data-val="on">On</div>
+            </div>
+            <div class="helper">Gradually eases your deficit/surplus by up to 40% over the final third of your journey.</div>
           </div>
         </div>
       </div>
@@ -1615,7 +1814,12 @@ function renderSettings(){
     </div>
 
     <div class="section-title">Data</div>
-    <button class="btn btn-danger" id="btn-reset">Reset all data</button>
+    <div class="row2">
+      <button class="btn btn-ghost" id="btn-export">Export data</button>
+      <button class="btn btn-ghost" id="btn-import">Import data</button>
+    </div>
+    <input type="file" id="import-file-input" accept="application/json" class="hidden">
+    <button class="btn btn-danger" id="btn-reset" style="margin-top:10px;">Reset all data</button>
     <p class="helper" style="text-align:center;">This is a personal planning tool, not medical advice.</p>
   `;
 
@@ -1637,6 +1841,7 @@ function renderSettings(){
   });
   bindChips('s-grp-multiplier', refresh);
   bindChips('s-grp-interval', refresh);
+  bindChips('s-grp-taper', refresh);
   bindChips('s-grp-deficit', ()=>{
     const isCustom = document.querySelector('#s-grp-deficit .chip.active').dataset.val==='custom';
     document.getElementById('s-deficit-custom').classList.toggle('hidden', !isCustom);
@@ -1686,11 +1891,19 @@ function renderSettings(){
       name, startWeight:v.startWeight, goalWeight:v.goalWeight,
       height:v.height, age:v.age, sex:v.sex, activityLevel:v.activityLevel, goalType:v.goalType,
       multiplier:v.multiplier, recommendedMultiplier:v.recommendedMultiplier, bmr:v.bmr, tdee:v.tdee,
-      calcMode:v.calcMode, deficit:v.deficit, interval:v.interval,
+      calcMode:v.calcMode, deficit:v.deficit, interval:v.interval, taperDeficit:v.taperDeficit,
     };
     await saveState();
     showToast('Roadmap updated.');
     renderAll();
+  };
+
+  document.getElementById('btn-export').onclick = exportData;
+  document.getElementById('btn-import').onclick = ()=> document.getElementById('import-file-input').click();
+  document.getElementById('import-file-input').onchange = (e)=>{
+    const file = e.target.files[0];
+    if(file) importDataFile(file);
+    e.target.value = '';
   };
 
   document.getElementById('btn-reset').onclick = async ()=>{
