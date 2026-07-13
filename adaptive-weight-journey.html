@@ -271,14 +271,14 @@ let logSubTab = 'weight';
 // ---------------- persistence ----------------
 async function loadState(){
   try{
-    const res = await window.storage.get(STORAGE_KEY, false);
-    if(res && res.value){ state = JSON.parse(res.value); }
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if(raw){ state = JSON.parse(raw); }
   }catch(e){ /* no data yet */ }
   if(!state.weightLogs) state.weightLogs = [];
   if(!state.nutritionLogs) state.nutritionLogs = [];
 }
 async function saveState(){
-  try{ await window.storage.set(STORAGE_KEY, JSON.stringify(state), false); }
+  try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
   catch(e){ console.error('save failed', e); }
 }
 
