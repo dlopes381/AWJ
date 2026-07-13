@@ -1,0 +1,1103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<title>Adaptive Weight Journey</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#EEF2EC;
+    --paper-alt:#E4EAE1;
+    --ink:#152119;
+    --ink-soft:#3C4A41;
+    --pine:#2B6355;
+    --pine-dark:#1B4238;
+    --pine-tint:#DEEAE4;
+    --moss:#7C9184;
+    --gold:#D9A227;
+    --gold-tint:#FBEFD2;
+    --card:#FFFFFF;
+    --line:#D7DED3;
+    --danger:#B4553F;
+    --radius:16px;
+    --shadow: 0 1px 2px rgba(21,33,25,0.04), 0 4px 16px rgba(21,33,25,0.06);
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--paper);
+    color:var(--ink);
+    font-family:'IBM Plex Sans', sans-serif;
+    -webkit-font-smoothing:antialiased;
+    min-height:100vh;
+    overscroll-behavior-y: contain;
+  }
+  .mono{font-family:'IBM Plex Mono', monospace;}
+  .display{font-family:'Space Grotesk', sans-serif;}
+  #app{
+    max-width:480px;
+    margin:0 auto;
+    min-height:100vh;
+    position:relative;
+    padding-bottom:84px;
+    background:
+      radial-gradient(600px 300px at 100% -60px, var(--paper-alt), transparent 60%),
+      var(--paper);
+  }
+  /* ---------- top bar ---------- */
+  .topbar{
+    position:sticky; top:0; z-index:20;
+    display:flex; align-items:center; justify-content:space-between;
+    padding:18px 20px 10px;
+    background:linear-gradient(var(--paper) 70%, transparent);
+  }
+  .brand{display:flex; align-items:center; gap:10px;}
+  .brand-mark{
+    width:30px;height:30px;border-radius:8px;
+    background:var(--pine); display:flex;align-items:center;justify-content:center;
+    flex-shrink:0;
+  }
+  .brand-name{font-family:'Space Grotesk';font-weight:700;font-size:15px;letter-spacing:0.2px;}
+  .brand-sub{font-size:10.5px;color:var(--moss);text-transform:uppercase;letter-spacing:1.2px;margin-top:1px;}
+  .icon-btn{
+    width:34px;height:34px;border-radius:10px;border:1px solid var(--line);
+    background:var(--card); display:flex;align-items:center;justify-content:center;color:var(--ink-soft);
+  }
+  /* ---------- generic ---------- */
+  .view{padding:4px 20px 28px;}
+  .hidden{display:none !important;}
+  .card{
+    background:var(--card);
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    padding:18px;
+    box-shadow:var(--shadow);
+  }
+  .stack > * + *{margin-top:14px;}
+  h1.page-title{font-family:'Space Grotesk';font-size:22px;margin:6px 0 2px;letter-spacing:-0.2px;}
+  .page-sub{color:var(--moss);font-size:13px;margin:0 0 18px;}
+  label{display:block;font-size:12px;font-weight:600;color:var(--ink-soft);margin-bottom:6px;letter-spacing:0.2px;}
+  .field{margin-bottom:16px;}
+  input[type=text], input[type=number], input[type=date], textarea, select{
+    width:100%; padding:11px 12px; border-radius:10px; border:1px solid var(--line);
+    background:var(--paper); font-family:'IBM Plex Sans'; font-size:14.5px; color:var(--ink);
+  }
+  input:focus, select:focus, textarea:focus, button:focus-visible{
+    outline:2px solid var(--pine); outline-offset:1px;
+  }
+  textarea{resize:vertical; min-height:56px;}
+  .row2{display:grid; grid-template-columns:1fr 1fr; gap:12px;}
+  .chip-group{display:flex; flex-wrap:wrap; gap:8px;}
+  .chip{
+    padding:8px 13px; border-radius:999px; border:1px solid var(--line); background:var(--card);
+    font-size:13px; font-weight:500; color:var(--ink-soft); cursor:pointer; user-select:none;
+  }
+  .chip.active{background:var(--pine); border-color:var(--pine); color:#fff;}
+  .btn{
+    display:inline-flex; align-items:center; justify-content:center; gap:8px;
+    width:100%; padding:13px 16px; border-radius:12px; border:none;
+    font-family:'IBM Plex Sans'; font-weight:600; font-size:14.5px; cursor:pointer;
+  }
+  .btn-primary{background:var(--pine); color:#fff;}
+  .btn-primary:active{background:var(--pine-dark);}
+  .btn-ghost{background:transparent; color:var(--ink-soft); border:1px solid var(--line);}
+  .btn-danger{background:transparent; color:var(--danger); border:1px solid #E7CFC7;}
+  .helper{font-size:12px; color:var(--moss); margin-top:6px; line-height:1.5;}
+  .badge{
+    display:inline-block; font-size:10.5px; font-weight:700; letter-spacing:0.4px; text-transform:uppercase;
+    padding:3px 8px; border-radius:6px;
+  }
+  .badge-current{background:var(--gold-tint); color:#8A6110;}
+  .badge-reached{background:var(--pine-tint); color:var(--pine-dark);}
+  .badge-upcoming{background:var(--paper-alt); color:var(--moss);}
+
+  /* ---------- bottom nav ---------- */
+  .tabbar{
+    position:fixed; bottom:0; left:0; right:0; z-index:30;
+    display:flex; justify-content:center;
+  }
+  .tabbar-inner{
+    width:100%; max-width:480px; display:flex;
+    background:var(--card); border-top:1px solid var(--line);
+    padding:8px 6px calc(8px + env(safe-area-inset-bottom));
+  }
+  .tab-btn{
+    flex:1; display:flex; flex-direction:column; align-items:center; gap:4px;
+    background:none; border:none; padding:6px 2px; color:var(--moss); cursor:pointer;
+  }
+  .tab-btn.active{color:var(--pine);}
+  .tab-btn span{font-size:10.5px; font-weight:600; letter-spacing:0.2px;}
+
+  /* ---------- dashboard hero ---------- */
+  .hero-card{
+    background:linear-gradient(160deg, var(--pine) 0%, var(--pine-dark) 100%);
+    border-radius:20px; padding:22px 20px 18px; color:#fff; position:relative; overflow:hidden;
+    box-shadow:var(--shadow);
+  }
+  .hero-top{display:flex; justify-content:space-between; align-items:flex-start;}
+  .hero-label{font-size:11.5px; text-transform:uppercase; letter-spacing:1.2px; opacity:0.75;}
+  .hero-weight{font-family:'Space Grotesk'; font-size:38px; font-weight:700; margin-top:2px; line-height:1;}
+  .hero-goal{font-size:12.5px; opacity:0.8; margin-top:4px;}
+  .hero-progress-track{height:8px; border-radius:99px; background:rgba(255,255,255,0.22); margin-top:16px; overflow:hidden;}
+  .hero-progress-fill{height:100%; background:var(--gold); border-radius:99px; transition:width .4s ease;}
+  .hero-stats{display:flex; justify-content:space-between; margin-top:10px; font-size:11.5px; opacity:0.85;}
+
+  .stat-grid{display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:14px;}
+  .stat-box{background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px;}
+  .stat-box .k{font-size:11px; color:var(--moss); text-transform:uppercase; letter-spacing:0.6px;}
+  .stat-box .v{font-family:'IBM Plex Mono'; font-size:20px; font-weight:600; margin-top:4px;}
+
+  .section-title{font-family:'Space Grotesk'; font-weight:600; font-size:14.5px; margin:22px 0 10px; display:flex; align-items:center; justify-content:space-between;}
+
+  /* ---------- trail svg ---------- */
+  .trail-wrap{overflow-x:auto; -webkit-overflow-scrolling:touch;}
+  .trail-wrap svg{display:block;}
+  .phase-row{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:13px 14px; border:1px solid var(--line); border-radius:13px; background:var(--card);
+  }
+  .phase-row + .phase-row{margin-top:8px;}
+  .phase-left{display:flex; align-items:center; gap:12px;}
+  .phase-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;}
+  .phase-target{font-family:'IBM Plex Mono'; font-weight:600; font-size:15px;}
+  .phase-cals{font-size:12px; color:var(--moss); margin-top:2px;}
+
+  .banner{
+    display:flex; gap:10px; align-items:flex-start; padding:13px 14px; border-radius:13px;
+    background:var(--gold-tint); border:1px solid #F0DFAF; font-size:13px; color:#7A5A0C; line-height:1.45;
+  }
+
+  /* ---------- log entries ---------- */
+  .log-entry{
+    display:flex; justify-content:space-between; align-items:center;
+    padding:12px 14px; border:1px solid var(--line); border-radius:13px; background:var(--card);
+  }
+  .log-entry + .log-entry{margin-top:8px;}
+  .log-date{font-size:11.5px; color:var(--moss);}
+  .log-weight{font-family:'IBM Plex Mono'; font-weight:600; font-size:16px; margin-top:2px;}
+  .log-note{font-size:12px; color:var(--ink-soft); margin-top:3px; max-width:200px;}
+  .log-actions{display:flex; gap:2px;}
+  .del-btn{background:none;border:none;color:var(--moss);padding:6px;cursor:pointer;}
+  .del-btn:hover{color:var(--ink);}
+  .log-edit-card{
+    padding:14px; border:1px solid var(--pine); border-radius:13px; background:var(--pine-tint);
+  }
+  .log-edit-card + .log-entry, .log-edit-card + .log-edit-card{margin-top:8px;}
+  .edit-actions{display:flex; gap:10px; margin-top:10px;}
+  .edit-actions .btn{padding:10px 12px; font-size:13px;}
+
+  .trend-label{
+    display:flex; align-items:center; gap:8px; font-size:13.5px; font-weight:600; margin-bottom:2px;
+  }
+  .trend-arrow{width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+  .trend-sub{font-size:12px; color:var(--moss); margin-top:8px;}
+
+  .empty-state{text-align:center; padding:40px 12px; color:var(--moss); font-size:13.5px;}
+
+  /* setup screen */
+  #setup-screen{max-width:480px;margin:0 auto;padding:28px 22px 40px;min-height:100vh;}
+  .setup-hero{margin-bottom:22px;}
+  .setup-hero .display{font-size:26px; font-weight:700; letter-spacing:-0.3px;}
+  .setup-hero p{color:var(--moss); font-size:13.5px; margin-top:8px; line-height:1.55;}
+
+  .toast{
+    position:fixed; left:50%; transform:translateX(-50%); bottom:96px; z-index:50;
+    background:var(--pine-dark); color:#fff; padding:12px 18px; border-radius:12px; font-size:13.5px;
+    box-shadow:var(--shadow); max-width:400px; text-align:center;
+  }
+  .loading-wrap{display:flex;align-items:center;justify-content:center;min-height:100vh;color:var(--moss);font-size:13px;}
+</style>
+</head>
+<body>
+
+<div id="loading" class="loading-wrap">Loading your roadmap…</div>
+
+<div id="setup-screen" class="hidden"></div>
+
+<div id="app" class="hidden">
+  <div class="topbar">
+    <div class="brand">
+      <div class="brand-mark">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 20L9 8L13 14L16 9L21 20" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div>
+        <div class="brand-name">Adaptive Weight Journey</div>
+        <div class="brand-sub" id="today-date"></div>
+      </div>
+    </div>
+    <button class="icon-btn" onclick="goTab('settings')" aria-label="Settings">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 4.6a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0019.4 9c.14.36.22.75.22 1.15V10a2 2 0 010 4h-.09c-.4 0-.79.08-1.15.22z"/></svg>
+    </button>
+  </div>
+
+  <div id="view-dashboard" class="view"></div>
+  <div id="view-roadmap" class="view hidden"></div>
+  <div id="view-log" class="view hidden"></div>
+  <div id="view-settings" class="view hidden"></div>
+
+  <div class="tabbar">
+    <div class="tabbar-inner">
+      <button class="tab-btn active" data-tab="dashboard" onclick="goTab('dashboard')">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 20L9 8L13 14L16 9L21 20"/></svg>
+        <span>Trail</span>
+      </button>
+      <button class="tab-btn" data-tab="roadmap" onclick="goTab('roadmap')">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 20l-5-2V4l5 2m0 14l6-2m-6 2V6m6 12l5 2V6l-5-2m0 16V4m0 2l-6-2"/></svg>
+        <span>Roadmap</span>
+      </button>
+      <button class="tab-btn" data-tab="log" onclick="goTab('log')">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20V4m8 8H4"/></svg>
+        <span>Log weight</span>
+      </button>
+      <button class="tab-btn" data-tab="settings" onclick="goTab('settings')">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 4.6a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0019.4 9c.14.36.22.75.22 1.15V10a2 2 0 010 4h-.09c-.4 0-.79.08-1.15.22z"/></svg>
+        <span>Setup</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+const STORAGE_KEY = 'awj:data';
+let state = { profile:null, weightLogs:[], nutritionLogs:[], ackPhaseId:null };
+let activeTab = 'dashboard';
+let editingLogId = null;
+let editingNutritionId = null;
+let logSubTab = 'weight';
+
+// ---------------- persistence ----------------
+async function loadState(){
+  try{
+    const res = await window.storage.get(STORAGE_KEY, false);
+    if(res && res.value){ state = JSON.parse(res.value); }
+  }catch(e){ /* no data yet */ }
+  if(!state.weightLogs) state.weightLogs = [];
+  if(!state.nutritionLogs) state.nutritionLogs = [];
+}
+async function saveState(){
+  try{ await window.storage.set(STORAGE_KEY, JSON.stringify(state), false); }
+  catch(e){ console.error('save failed', e); }
+}
+
+// ---------------- roadmap engine ----------------
+function computePhases(p){
+  const targets = [];
+  let w = p.startWeight;
+  while (w > p.goalWeight + 0.001){
+    targets.push(Math.round(w*10)/10);
+    w -= p.interval;
+  }
+  targets.push(p.goalWeight);
+  const dedup = [...new Set(targets)].sort((a,b)=>b-a);
+  return dedup.map((t,i)=>({
+    id:i+1,
+    weightTarget:t,
+    maintenance: Math.round(t*p.multiplier),
+    eating: Math.round(t*p.multiplier - p.deficit)
+  }));
+}
+
+function currentWeight(){
+  if(state.weightLogs.length===0) return state.profile.startWeight;
+  const sorted = [...state.weightLogs].sort((a,b)=> new Date(b.date)-new Date(a.date));
+  return sorted[0].weight;
+}
+
+const ROLLING_WINDOW = 5;
+
+// Weigh-ins fluctuate day to day, so phase progression is gated on the
+// average of the last ROLLING_WINDOW weigh-ins rather than a single reading.
+function rollingAverageWeight(n=ROLLING_WINDOW){
+  if(state.weightLogs.length===0) return state.profile.startWeight;
+  const sorted = [...state.weightLogs].sort((a,b)=> new Date(b.date)-new Date(a.date));
+  const recent = sorted.slice(0, n);
+  return recent.reduce((s,l)=>s+l.weight,0)/recent.length;
+}
+
+function getActivePhase(phases, w){
+  for(const ph of phases){
+    if(w > ph.weightTarget) return ph;
+  }
+  return phases[phases.length-1];
+}
+
+function isGoalReached(){
+  return rollingAverageWeight() <= state.profile.goalWeight + 0.001;
+}
+
+// ---------------- utils ----------------
+function fmt(n, d=1){ return Number(n).toFixed(d).replace(/\.0$/,''); }
+function todayStr(){ return new Date().toISOString().slice(0,10); }
+function prettyDate(d){
+  const dt = new Date(d+'T00:00:00');
+  return dt.toLocaleDateString(undefined, {month:'short', day:'numeric'});
+}
+function showToast(msg){
+  const t = document.createElement('div');
+  t.className='toast'; t.textContent=msg;
+  document.body.appendChild(t);
+  setTimeout(()=>t.remove(), 3800);
+}
+
+// ---------------- setup screen ----------------
+function renderSetupScreen(){
+  const el = document.getElementById('setup-screen');
+  const p = state.profile || {};
+  el.innerHTML = `
+    <div class="setup-hero">
+      <div class="brand-mark" style="margin-bottom:14px;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 20L9 8L13 14L16 9L21 20" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="display">Set your goal once.<br>Follow the roadmap.</div>
+      <p>Tell us where you're starting and where you're headed. We'll build a step-by-step calorie roadmap that adjusts automatically as you reach each milestone.</p>
+    </div>
+    <div class="stack">
+      <div class="card">
+        <div class="field">
+          <label>Name (optional)</label>
+          <input type="text" id="f-name" value="${p.name||''}" placeholder="Your name">
+        </div>
+        <div class="row2">
+          <div class="field">
+            <label>Current weight (lbs)</label>
+            <input type="number" id="f-current" value="${p.startWeight||''}" placeholder="e.g. 315" inputmode="decimal">
+          </div>
+          <div class="field">
+            <label>Goal weight (lbs)</label>
+            <input type="number" id="f-goal" value="${p.goalWeight||''}" placeholder="e.g. 220" inputmode="decimal">
+          </div>
+        </div>
+        <div id="goal-error" class="helper" style="color:var(--danger); display:none;">Goal weight must be at least 10 lbs below current weight.</div>
+      </div>
+
+      <div class="card">
+        <div class="field">
+          <label>Calorie multiplier</label>
+          <div class="chip-group" id="grp-multiplier">
+            ${[10,11,12,13,14,15].map(v=>`<div class="chip ${((p.multiplier||12)==v)?'active':''}" data-val="${v}">${v}×</div>`).join('')}
+          </div>
+          <div class="helper">Maintenance calories = goal weight × multiplier. 12× is a common starting point.</div>
+        </div>
+        <div class="field">
+          <label>Daily deficit</label>
+          <div class="chip-group" id="grp-deficit">
+            ${[300,500,750,1000].map(v=>`<div class="chip ${((p.deficit||500)==v)?'active':''}" data-val="${v}">${v} cal</div>`).join('')}
+          </div>
+        </div>
+        <div class="field">
+          <label>Adjust every</label>
+          <div class="chip-group" id="grp-interval">
+            ${[5,10].map(v=>`<div class="chip ${((p.interval||5)==v)?'active':''}" data-val="${v}">${v} lbs</div>`).join('')}
+          </div>
+          <div class="helper">Your calorie target steps down each time you reach a new weight milestone.</div>
+        </div>
+      </div>
+
+      <button class="btn btn-primary" id="btn-create">Build my roadmap</button>
+      <p class="helper" style="text-align:center;">This is a personal planning tool, not medical advice. If you're managing a health condition, it's worth checking your plan with a doctor or dietitian.</p>
+    </div>
+  `;
+
+  function bindChips(groupId){
+    const g = document.getElementById(groupId);
+    g.querySelectorAll('.chip').forEach(c=>{
+      c.onclick = ()=>{ g.querySelectorAll('.chip').forEach(x=>x.classList.remove('active')); c.classList.add('active'); };
+    });
+  }
+  bindChips('grp-multiplier'); bindChips('grp-deficit'); bindChips('grp-interval');
+
+  document.getElementById('btn-create').onclick = async ()=>{
+    const name = document.getElementById('f-name').value.trim();
+    const startWeight = parseFloat(document.getElementById('f-current').value);
+    const goalWeight = parseFloat(document.getElementById('f-goal').value);
+    const multiplier = parseFloat(document.querySelector('#grp-multiplier .chip.active')?.dataset.val || 12);
+    const deficit = parseFloat(document.querySelector('#grp-deficit .chip.active')?.dataset.val || 500);
+    const interval = parseFloat(document.querySelector('#grp-interval .chip.active')?.dataset.val || 5);
+
+    const err = document.getElementById('goal-error');
+    if(!startWeight || !goalWeight || goalWeight >= startWeight || (startWeight-goalWeight) < 10){
+      err.style.display='block';
+      return;
+    }
+    err.style.display='none';
+
+    state.profile = { name, startWeight, goalWeight, multiplier, deficit, interval, createdDate: todayStr() };
+    state.weightLogs = state.weightLogs.length ? state.weightLogs : [{id:cryptoId(), date: todayStr(), weight: startWeight, notes:''}];
+    state.ackPhaseId = 1;
+    await saveState();
+    boot();
+  };
+}
+
+function cryptoId(){ return 'id'+Math.random().toString(36).slice(2,10)+Date.now().toString(36); }
+
+// ---------------- dashboard ----------------
+function renderDashboard(){
+  const p = state.profile;
+  const phases = computePhases(p);
+  const cw = currentWeight();
+  const avgW = rollingAverageWeight();
+  const avgCount = Math.min(state.weightLogs.length, ROLLING_WINDOW);
+  const goalDone = isGoalReached();
+  const active = getActivePhase(phases, avgW);
+  const totalLost = p.startWeight - avgW;
+  const totalToLose = p.startWeight - p.goalWeight;
+  const progressPct = Math.max(0, Math.min(100, (totalLost/totalToLose)*100));
+  const remaining = Math.max(0, avgW - p.goalWeight);
+  const distance = Math.max(0, avgW - active.weightTarget);
+
+  const el = document.getElementById('view-dashboard');
+  el.innerHTML = `
+    <div class="hero-card">
+      <div class="hero-top">
+        <div>
+          <div class="hero-label">Current weight</div>
+          <div class="hero-weight mono">${fmt(cw)}<span style="font-size:16px; opacity:.7;"> lbs</span></div>
+          <div class="hero-goal">Goal: ${fmt(p.goalWeight,0)} lbs</div>
+        </div>
+        <div style="text-align:right;">
+          <div class="hero-label">Today's target</div>
+          <div class="hero-weight mono" style="font-size:26px;">${goalDone? '—' : fmt(active.eating,0)}</div>
+          <div class="hero-goal">${goalDone? 'Goal reached' : 'calories'}</div>
+        </div>
+      </div>
+      <div class="hero-progress-track"><div class="hero-progress-fill" style="width:${progressPct}%;"></div></div>
+      <div class="hero-stats">
+        <span>${fmt(progressPct,1)}% of the way there</span>
+        <span>${fmt(remaining,1)} lbs to go</span>
+      </div>
+    </div>
+
+    ${!goalDone && distance <= 1 ? `<div class="banner" style="margin-top:14px;">🏁 <div>Your ${avgCount}-log average is just <strong>${fmt(distance,1)} lb</strong> from unlocking your next calorie step at ${fmt(active.weightTarget,0)} lbs.</div></div>` : ''}
+    ${goalDone ? `<div class="banner" style="margin-top:14px;">🎉 <div>Your ${avgCount}-log average has reached your goal weight of ${fmt(p.goalWeight,0)} lbs. You can set a new goal any time from Setup.</div></div>` : ''}
+
+    <div class="stat-grid">
+      <div class="stat-box"><div class="k">Total lost</div><div class="v">${fmt(totalLost)} lbs</div></div>
+      <div class="stat-box"><div class="k">Current phase</div><div class="v" style="font-size:16px;">${fmt(active.weightTarget,0)} lb phase</div></div>
+      <div class="stat-box"><div class="k">${avgCount}-log average</div><div class="v">${fmt(avgW)} lbs</div></div>
+    </div>
+
+    <div class="section-title">Quick log <span style="font-weight:400; color:var(--moss); font-size:12px;">tap to add today's numbers</span></div>
+    <div class="row2">
+      <button class="btn btn-ghost" onclick="goTab('log','weight')">+ Log weight</button>
+      <button class="btn btn-ghost" onclick="goTab('log','calories')">+ Log calories</button>
+    </div>
+
+    <div class="section-title">Your trail</div>
+    <div class="card trail-wrap">${renderTrailSVG(phases, avgW)}</div>
+
+    <div class="section-title">Weight trend</div>
+    <div class="card">${renderTrendChart()}</div>
+
+    ${renderWeeklyInsight()}
+  `;
+}
+
+function renderTrailSVG(phases, cw){
+  const n = phases.length;
+  const stepX = 46;
+  const w = Math.max(320, n*stepX + 40);
+  const h = 130;
+  const amp = 30;
+  const baseY = h/2;
+  const activeIdx = phases.findIndex(ph=>ph===getActivePhase(phases,cw));
+
+  let pathD = '';
+  const points = phases.map((ph,i)=>{
+    const x = 24 + i*stepX;
+    const y = baseY + Math.sin(i*0.9)*amp*0.6;
+    return {x,y,ph,i};
+  });
+  points.forEach((pt,i)=>{
+    pathD += (i===0? `M ${pt.x} ${pt.y}` : ` L ${pt.x} ${pt.y}`);
+  });
+
+  const completedPathPts = points.slice(0, activeIdx+1);
+  let completedD = '';
+  completedPathPts.forEach((pt,i)=>{ completedD += (i===0? `M ${pt.x} ${pt.y}` : ` L ${pt.x} ${pt.y}`); });
+
+  const dots = points.map((pt,i)=>{
+    let fill, stroke, r=6;
+    if(i < activeIdx){ fill='var(--pine)'; stroke='var(--pine)'; }
+    else if(i === activeIdx){ fill='var(--gold)'; stroke='var(--gold)'; r=7.5; }
+    else { fill='var(--card)'; stroke='var(--moss)'; }
+    return `<circle cx="${pt.x}" cy="${pt.y}" r="${r}" fill="${fill}" stroke="${stroke}" stroke-width="1.5"/>`;
+  }).join('');
+
+  return `<svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg">
+    <path d="${pathD}" fill="none" stroke="var(--line)" stroke-width="3" stroke-dasharray="1 8" stroke-linecap="round"/>
+    <path d="${completedD}" fill="none" stroke="var(--pine)" stroke-width="3" stroke-linecap="round"/>
+    ${dots}
+  </svg>`;
+}
+
+function computeTrend(){
+  const logs = [...state.weightLogs].sort((a,b)=> new Date(a.date)-new Date(b.date));
+  if(logs.length < 2) return null;
+  const first = new Date(logs[0].date);
+  const xs = logs.map(l => (new Date(l.date) - first)/86400000);
+  const ys = logs.map(l => l.weight);
+  const n = xs.length;
+  const sumX = xs.reduce((a,b)=>a+b,0);
+  const sumY = ys.reduce((a,b)=>a+b,0);
+  const sumXY = xs.reduce((s,x,i)=> s + x*ys[i], 0);
+  const sumX2 = xs.reduce((s,x)=> s + x*x, 0);
+  const denom = (n*sumX2 - sumX*sumX);
+  const slope = denom === 0 ? 0 : (n*sumXY - sumX*sumY) / denom; // lbs per day
+  const intercept = (sumY - slope*sumX)/n;
+  const slopePerWeek = slope*7;
+  return { logs, xs, ys, slope, intercept, slopePerWeek };
+}
+
+function renderTrendChart(){
+  const trend = computeTrend();
+  if(!trend){
+    return `<div class="empty-state">Log at least 2 weigh-ins to see your trend.</div>`;
+  }
+  const { logs, ys, slope, intercept, xs, slopePerWeek } = trend;
+  const n = logs.length;
+  const stepX = Math.max(28, Math.min(50, 340/(n-1||1)));
+  const padTop=18, padBottom=26, padLeft=14;
+  const w = Math.max(280, padLeft*2 + (n-1)*stepX);
+  const h = 150;
+  const minW = Math.min(...ys), maxW = Math.max(...ys);
+  const range = (maxW - minW) || 1;
+  const plotTop = padTop, plotBottom = h - padBottom;
+  const mapY = (val)=> plotTop + ( (maxW - val) / range ) * (plotBottom - plotTop);
+  const mapX = (i)=> padLeft + i*stepX;
+
+  let lineD = '';
+  logs.forEach((l,i)=>{
+    const x = mapX(i), y = mapY(l.weight);
+    lineD += (i===0? `M ${x} ${y}` : ` L ${x} ${y}`);
+  });
+
+  const yStart = intercept + xs[0]*slope;
+  const yEnd = intercept + xs[n-1]*slope;
+  const trendX1 = mapX(0), trendY1 = mapY(yStart);
+  const trendX2 = mapX(n-1), trendY2 = mapY(yEnd);
+
+  let color, label, arrow;
+  if(slopePerWeek <= -2.5){
+    color='var(--gold)'; label=`Losing fast — about ${fmt(Math.abs(slopePerWeek))} lbs/week`; arrow='down';
+  } else if(slopePerWeek <= -0.75){
+    color='var(--pine)'; label=`Trending down — about ${fmt(Math.abs(slopePerWeek))} lbs/week`; arrow='down';
+  } else if(slopePerWeek < 0.25){
+    color='var(--moss)'; label='Roughly flat this stretch'; arrow='flat';
+  } else {
+    color='var(--danger)'; label=`Trending up — about ${fmt(slopePerWeek)} lbs/week`; arrow='up';
+  }
+  const arrowGlyph = arrow==='down' ? '&#8595;' : arrow==='up' ? '&#8593;' : '&#8594;';
+
+  const dots = logs.map((l,i)=>`<circle cx="${mapX(i)}" cy="${mapY(l.weight)}" r="3.5" fill="var(--card)" stroke="var(--ink-soft)" stroke-width="1.4"/>`).join('');
+
+  return `
+    <div class="trend-label">
+      <span class="trend-arrow" style="background:${color}22; color:${color};">${arrowGlyph}</span>
+      <span style="color:${color};">${label}</span>
+    </div>
+    <div class="trail-wrap">
+      <svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg">
+        <line x1="${trendX1}" y1="${trendY1}" x2="${trendX2}" y2="${trendY2}" stroke="${color}" stroke-width="2.5" stroke-dasharray="5 5" stroke-linecap="round"/>
+        <path d="${lineD}" fill="none" stroke="var(--ink-soft)" stroke-width="2"/>
+        ${dots}
+      </svg>
+    </div>
+    <div class="trend-sub">Based on your last ${n} weigh-ins, from ${prettyDate(logs[0].date)} to ${prettyDate(logs[n-1].date)}.</div>
+  `;
+}
+
+function renderWeeklyInsight(){
+  const logs = [...state.weightLogs].sort((a,b)=> new Date(a.date)-new Date(b.date));
+  if(logs.length < 4) return '';
+  const now = new Date();
+  const withinDays = (d, days)=> (now - new Date(d)) / 86400000 <= days;
+  const last7 = logs.filter(l=> withinDays(l.date,7));
+  const prev7 = logs.filter(l=> { const days = (now-new Date(l.date))/86400000; return days>7 && days<=14; });
+  if(last7.length<2 || prev7.length<2) return '';
+  const avg = arr => arr.reduce((s,l)=>s+l.weight,0)/arr.length;
+  const rate = avg(prev7) - avg(last7);
+  let msg, tone='pine-tint';
+  if(rate > 3){ msg = `You're averaging about ${fmt(rate)} lbs/week — faster than the ideal 1–2 lbs. Consider adding 100–200 calories to protect your energy and muscle.`; }
+  else if(rate >= 1){ msg = `Great pace — you're averaging about ${fmt(rate)} lbs/week, right in the ideal 1–2 lb range. Keep going.`; }
+  else if(rate > 0){ msg = `Progress has slowed to about ${fmt(rate)} lbs/week. If this continues for a few more weeks, consider a small calorie cut or adding activity.`; }
+  else { msg = `Your weight hasn't moved much this week. That's normal short-term — keep logging and watch the weekly trend.`; }
+  return `<div class="section-title">Weekly insight</div><div class="banner">📊 <div>${msg}</div></div>`;
+}
+
+// ---------------- roadmap tab ----------------
+function renderRoadmap(){
+  const p = state.profile;
+  const phases = computePhases(p);
+  const avgW = rollingAverageWeight();
+  const active = getActivePhase(phases, avgW);
+  const el = document.getElementById('view-roadmap');
+  el.innerHTML = `
+    <h1 class="page-title">Roadmap</h1>
+    <p class="page-sub">${phases.length} phases from ${fmt(p.startWeight,0)} to ${fmt(p.goalWeight,0)} lbs, stepping every ${p.interval} lbs. Progress is based on your ${Math.min(state.weightLogs.length, ROLLING_WINDOW)}-log rolling average of ${fmt(avgW)} lbs.</p>
+    <div class="stack">
+      ${phases.map(ph=>{
+        const reached = avgW <= ph.weightTarget;
+        const isActive = ph.id===active.id && !isGoalReached();
+        const badge = isActive? '<span class="badge badge-current">Current</span>' : reached? '<span class="badge badge-reached">Reached</span>' : '<span class="badge badge-upcoming">Upcoming</span>';
+        const dotColor = isActive? 'var(--gold)' : reached? 'var(--pine)' : 'var(--line)';
+        return `<div class="phase-row">
+          <div class="phase-left">
+            <div class="phase-dot" style="background:${dotColor};"></div>
+            <div>
+              <div class="phase-target">${fmt(ph.weightTarget,0)} lbs</div>
+              <div class="phase-cals">${ph.eating} cal/day · maintenance ${ph.maintenance}</div>
+            </div>
+          </div>
+          ${badge}
+        </div>`;
+      }).join('')}
+    </div>
+  `;
+}
+
+// ---------------- log tab ----------------
+function renderLog(){
+  const el = document.getElementById('view-log');
+  el.innerHTML = `
+    <h1 class="page-title">Log</h1>
+    <p class="page-sub">Track weight and food to keep your roadmap accurate.</p>
+    <div class="chip-group" id="log-subtabs" style="margin-bottom:18px;">
+      <div class="chip ${logSubTab==='weight'?'active':''}" data-sub="weight">Weight</div>
+      <div class="chip ${logSubTab==='calories'?'active':''}" data-sub="calories">Calories</div>
+    </div>
+    <div id="log-subview"></div>
+  `;
+  document.querySelectorAll('#log-subtabs .chip').forEach(c=>{
+    c.onclick = ()=>{ logSubTab = c.dataset.sub; renderLog(); };
+  });
+  if(logSubTab==='calories'){ renderCaloriesLogView(); } else { renderWeightLogView(); }
+}
+
+function renderWeightLogView(){
+  const container = document.getElementById('log-subview');
+  const sorted = [...state.weightLogs].sort((a,b)=> new Date(b.date)-new Date(a.date));
+  container.innerHTML = `
+    <div class="card stack">
+      <div class="row2">
+        <div class="field" style="margin-bottom:0;">
+          <label>Date</label>
+          <input type="date" id="log-date" value="${todayStr()}">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Weight (lbs)</label>
+          <input type="number" id="log-weight" placeholder="e.g. 301.2" inputmode="decimal">
+        </div>
+      </div>
+      <div class="field" style="margin-bottom:0;">
+        <label>Notes (optional)</label>
+        <textarea id="log-notes" placeholder="Feeling good, workout completed…"></textarea>
+      </div>
+      <button class="btn btn-primary" id="btn-log-save">Save entry</button>
+    </div>
+
+    <div class="section-title">History</div>
+    ${sorted.length? `<div class="stack">${sorted.map(l=> l.id===editingLogId ? renderEditRow(l) : `
+      <div class="log-entry">
+        <div>
+          <div class="log-date">${prettyDate(l.date)}</div>
+          <div class="log-weight">${fmt(l.weight)} lbs</div>
+          ${l.notes? `<div class="log-note">${escapeHtml(l.notes)}</div>`:''}
+        </div>
+        <div class="log-actions">
+          <button class="del-btn" onclick="startEditLog('${l.id}')" aria-label="Edit entry">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          </button>
+          <button class="del-btn" onclick="deleteLog('${l.id}')" aria-label="Delete entry">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0l-1 14a2 2 0 01-2 2H7a2 2 0 01-2-2L4 6"/></svg>
+          </button>
+        </div>
+      </div>`).join('')}</div>` : `<div class="empty-state">No entries yet. Log your first weigh-in above.</div>`}
+  `;
+
+  document.querySelectorAll('[data-edit-save]').forEach(btn=>{
+    btn.onclick = ()=> saveEditLog(btn.dataset.editSave);
+  });
+  document.querySelectorAll('[data-edit-cancel]').forEach(btn=>{
+    btn.onclick = ()=> { editingLogId = null; renderLog(); };
+  });
+
+  document.getElementById('btn-log-save').onclick = async ()=>{
+    const date = document.getElementById('log-date').value || todayStr();
+    const weight = parseFloat(document.getElementById('log-weight').value);
+    const notes = document.getElementById('log-notes').value.trim();
+    if(!weight || weight<=0){ showToast('Enter a valid weight first.'); return; }
+
+    const phasesBefore = computePhases(state.profile);
+    const activeBefore = getActivePhase(phasesBefore, rollingAverageWeight());
+
+    state.weightLogs = state.weightLogs.filter(l=>l.date!==date);
+    state.weightLogs.push({id:cryptoId(), date, weight, notes});
+    await saveState();
+
+    const activeAfter = getActivePhase(phasesBefore, rollingAverageWeight());
+    if(activeAfter.id !== activeBefore.id){
+      showToast(`Milestone reached! Calorie target updated from ${activeBefore.eating} to ${activeAfter.eating}.`);
+    } else {
+      showToast('Entry saved.');
+    }
+    renderAll();
+    goTab('dashboard');
+  };
+}
+
+function renderCaloriesLogView(){
+  const container = document.getElementById('log-subview');
+  const p = state.profile;
+  const phases = computePhases(p);
+  const active = getActivePhase(phases, rollingAverageWeight());
+  const calorieTarget = isGoalReached() ? active.eating : active.eating;
+  const proteinGoal = Math.round(p.goalWeight * 1);
+  const sorted = [...state.nutritionLogs].sort((a,b)=> new Date(b.date)-new Date(a.date));
+
+  container.innerHTML = `
+    <div class="banner" style="margin-bottom:14px;">🎯 <div>Today's target is <strong>${calorieTarget} calories</strong>, with roughly <strong>${proteinGoal}g protein</strong>.</div></div>
+    <div class="card stack">
+      <div class="row2">
+        <div class="field" style="margin-bottom:0;">
+          <label>Date</label>
+          <input type="date" id="cal-date" value="${todayStr()}">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Calories</label>
+          <input type="number" id="cal-calories" placeholder="e.g. 2950" inputmode="decimal">
+        </div>
+      </div>
+      <div class="row2">
+        <div class="field" style="margin-bottom:0;">
+          <label>Protein (g)</label>
+          <input type="number" id="cal-protein" placeholder="e.g. 185" inputmode="decimal">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Water (oz)</label>
+          <input type="number" id="cal-water" placeholder="e.g. 80" inputmode="decimal">
+        </div>
+      </div>
+      <div class="row2">
+        <div class="field" style="margin-bottom:0;">
+          <label>Carbs (g)</label>
+          <input type="number" id="cal-carbs" placeholder="optional" inputmode="decimal">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Fat (g)</label>
+          <input type="number" id="cal-fat" placeholder="optional" inputmode="decimal">
+        </div>
+      </div>
+      <button class="btn btn-primary" id="btn-cal-save">Save entry</button>
+    </div>
+
+    <div class="section-title">History</div>
+    ${sorted.length? `<div class="stack">${sorted.map(n=> n.id===editingNutritionId ? renderNutritionEditRow(n) : `
+      <div class="log-entry">
+        <div>
+          <div class="log-date">${prettyDate(n.date)}</div>
+          <div class="log-weight">${n.calories} cal</div>
+          <div class="log-note">${n.protein}g protein${n.carbs? ` · ${n.carbs}g carbs`:''}${n.fat? ` · ${n.fat}g fat`:''}${n.water? ` · ${n.water}oz water`:''}</div>
+        </div>
+        <div class="log-actions">
+          <button class="del-btn" onclick="startEditNutrition('${n.id}')" aria-label="Edit entry">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          </button>
+          <button class="del-btn" onclick="deleteNutrition('${n.id}')" aria-label="Delete entry">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0l-1 14a2 2 0 01-2 2H7a2 2 0 01-2-2L4 6"/></svg>
+          </button>
+        </div>
+      </div>`).join('')}</div>` : `<div class="empty-state">No entries yet. Log today's food above.</div>`}
+  `;
+
+  document.querySelectorAll('[data-nutri-edit-save]').forEach(btn=>{
+    btn.onclick = ()=> saveEditNutrition(btn.dataset.nutriEditSave);
+  });
+  document.querySelectorAll('[data-nutri-edit-cancel]').forEach(btn=>{
+    btn.onclick = ()=> { editingNutritionId = null; renderLog(); };
+  });
+
+  document.getElementById('btn-cal-save').onclick = async ()=>{
+    const date = document.getElementById('cal-date').value || todayStr();
+    const calories = parseFloat(document.getElementById('cal-calories').value);
+    const protein = parseFloat(document.getElementById('cal-protein').value) || 0;
+    const carbs = parseFloat(document.getElementById('cal-carbs').value) || 0;
+    const fat = parseFloat(document.getElementById('cal-fat').value) || 0;
+    const water = parseFloat(document.getElementById('cal-water').value) || 0;
+    if(!calories || calories<=0){ showToast('Enter a valid calorie amount first.'); return; }
+
+    state.nutritionLogs = state.nutritionLogs.filter(n=>n.date!==date);
+    state.nutritionLogs.push({id:cryptoId(), date, calories, protein, carbs, fat, water});
+    await saveState();
+    showToast('Entry saved.');
+    renderLog();
+  };
+}
+
+function renderNutritionEditRow(n){
+  return `
+    <div class="log-edit-card">
+      <div class="row2">
+        <div class="field" style="margin-bottom:0;">
+          <label>Date</label>
+          <input type="date" id="nedit-date-${n.id}" value="${n.date}">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Calories</label>
+          <input type="number" id="nedit-calories-${n.id}" value="${n.calories}" inputmode="decimal">
+        </div>
+      </div>
+      <div class="row2" style="margin-top:12px;">
+        <div class="field" style="margin-bottom:0;">
+          <label>Protein (g)</label>
+          <input type="number" id="nedit-protein-${n.id}" value="${n.protein||0}" inputmode="decimal">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Water (oz)</label>
+          <input type="number" id="nedit-water-${n.id}" value="${n.water||0}" inputmode="decimal">
+        </div>
+      </div>
+      <div class="row2" style="margin-top:12px;">
+        <div class="field" style="margin-bottom:0;">
+          <label>Carbs (g)</label>
+          <input type="number" id="nedit-carbs-${n.id}" value="${n.carbs||0}" inputmode="decimal">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Fat (g)</label>
+          <input type="number" id="nedit-fat-${n.id}" value="${n.fat||0}" inputmode="decimal">
+        </div>
+      </div>
+      <div class="edit-actions">
+        <button class="btn btn-primary" data-nutri-edit-save="${n.id}" style="flex:1;">Save changes</button>
+        <button class="btn btn-ghost" data-nutri-edit-cancel="${n.id}" style="flex:1;">Cancel</button>
+      </div>
+    </div>
+  `;
+}
+
+function startEditNutrition(id){
+  editingNutritionId = id;
+  renderLog();
+}
+
+async function saveEditNutrition(id){
+  const entry = state.nutritionLogs.find(n=>n.id===id);
+  if(!entry) return;
+  const date = document.getElementById(`nedit-date-${id}`).value;
+  const calories = parseFloat(document.getElementById(`nedit-calories-${id}`).value);
+  const protein = parseFloat(document.getElementById(`nedit-protein-${id}`).value) || 0;
+  const water = parseFloat(document.getElementById(`nedit-water-${id}`).value) || 0;
+  const carbs = parseFloat(document.getElementById(`nedit-carbs-${id}`).value) || 0;
+  const fat = parseFloat(document.getElementById(`nedit-fat-${id}`).value) || 0;
+  if(!date || !calories || calories<=0){ showToast('Enter a valid date and calorie amount.'); return; }
+
+  state.nutritionLogs = state.nutritionLogs.filter(n=> n.id===id || n.date!==date);
+  entry.date = date; entry.calories = calories; entry.protein = protein;
+  entry.water = water; entry.carbs = carbs; entry.fat = fat;
+
+  editingNutritionId = null;
+  await saveState();
+  showToast('Entry updated.');
+  renderLog();
+}
+
+async function deleteNutrition(id){
+  if(editingNutritionId===id) editingNutritionId = null;
+  state.nutritionLogs = state.nutritionLogs.filter(n=>n.id!==id);
+  await saveState();
+  showToast('Entry deleted.');
+  renderLog();
+}
+
+function renderEditRow(l){
+  return `
+    <div class="log-edit-card">
+      <div class="row2">
+        <div class="field" style="margin-bottom:0;">
+          <label>Date</label>
+          <input type="date" id="edit-date-${l.id}" value="${l.date}">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Weight (lbs)</label>
+          <input type="number" id="edit-weight-${l.id}" value="${l.weight}" inputmode="decimal">
+        </div>
+      </div>
+      <div class="field" style="margin-bottom:0; margin-top:12px;">
+        <label>Notes</label>
+        <textarea id="edit-notes-${l.id}">${escapeHtml(l.notes||'')}</textarea>
+      </div>
+      <div class="edit-actions">
+        <button class="btn btn-primary" data-edit-save="${l.id}" style="flex:1;">Save changes</button>
+        <button class="btn btn-ghost" data-edit-cancel="${l.id}" style="flex:1;">Cancel</button>
+      </div>
+    </div>
+  `;
+}
+
+function startEditLog(id){
+  editingLogId = id;
+  renderLog();
+}
+
+async function saveEditLog(id){
+  const dateEl = document.getElementById(`edit-date-${id}`);
+  const weightEl = document.getElementById(`edit-weight-${id}`);
+  const notesEl = document.getElementById(`edit-notes-${id}`);
+  const date = dateEl.value;
+  const weight = parseFloat(weightEl.value);
+  const notes = notesEl.value.trim();
+  if(!date || !weight || weight<=0){ showToast('Enter a valid date and weight.'); return; }
+
+  const entry = state.weightLogs.find(l=>l.id===id);
+  if(!entry) return;
+
+  // if another entry already exists on the new date, merge by removing the duplicate
+  state.weightLogs = state.weightLogs.filter(l=> l.id===id || l.date!==date);
+  entry.date = date;
+  entry.weight = weight;
+  entry.notes = notes;
+
+  editingLogId = null;
+  await saveState();
+  showToast('Entry updated.');
+  renderAll();
+}
+
+async function deleteLog(id){
+  if(editingLogId===id) editingLogId = null;
+  state.weightLogs = state.weightLogs.filter(l=>l.id!==id);
+  await saveState();
+  renderAll();
+  showToast('Entry deleted.');
+}
+
+function escapeHtml(s){
+  return s.replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// ---------------- settings tab ----------------
+function renderSettings(){
+  const p = state.profile;
+  const el = document.getElementById('view-settings');
+  el.innerHTML = `
+    <h1 class="page-title">Setup</h1>
+    <p class="page-sub">Adjust your goal or strategy. Changing your goal weight regenerates your roadmap.</p>
+    <div class="card stack">
+      <div class="field" style="margin-bottom:0;">
+        <label>Name</label>
+        <input type="text" id="s-name" value="${p.name||''}">
+      </div>
+      <div class="row2">
+        <div class="field" style="margin-bottom:0;">
+          <label>Start weight (lbs)</label>
+          <input type="number" id="s-start" value="${p.startWeight}">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Goal weight (lbs)</label>
+          <input type="number" id="s-goal" value="${p.goalWeight}">
+        </div>
+      </div>
+      <div class="field" style="margin-bottom:0;">
+        <label>Calorie multiplier</label>
+        <div class="chip-group" id="s-grp-mult">
+          ${[10,11,12,13,14,15].map(v=>`<div class="chip ${p.multiplier==v?'active':''}" data-val="${v}">${v}×</div>`).join('')}
+        </div>
+      </div>
+      <div class="field" style="margin-bottom:0;">
+        <label>Daily deficit</label>
+        <div class="chip-group" id="s-grp-deficit">
+          ${[300,500,750,1000].map(v=>`<div class="chip ${p.deficit==v?'active':''}" data-val="${v}">${v} cal</div>`).join('')}
+        </div>
+      </div>
+      <div class="field" style="margin-bottom:0;">
+        <label>Adjust every</label>
+        <div class="chip-group" id="s-grp-interval">
+          ${[5,10].map(v=>`<div class="chip ${p.interval==v?'active':''}" data-val="${v}">${v} lbs</div>`).join('')}
+        </div>
+      </div>
+      <button class="btn btn-primary" id="btn-save-settings">Save changes</button>
+    </div>
+
+    <div class="section-title">Data</div>
+    <button class="btn btn-danger" id="btn-reset">Reset all data</button>
+    <p class="helper" style="text-align:center;">This is a personal planning tool, not medical advice.</p>
+  `;
+
+  function bindChips(id){
+    const g = document.getElementById(id);
+    g.querySelectorAll('.chip').forEach(c=> c.onclick=()=>{ g.querySelectorAll('.chip').forEach(x=>x.classList.remove('active')); c.classList.add('active'); });
+  }
+  bindChips('s-grp-mult'); bindChips('s-grp-deficit'); bindChips('s-grp-interval');
+
+  document.getElementById('btn-save-settings').onclick = async ()=>{
+    const start = parseFloat(document.getElementById('s-start').value);
+    const goal = parseFloat(document.getElementById('s-goal').value);
+    if(!start || !goal || goal>=start || (start-goal)<10){ showToast('Goal weight must be at least 10 lbs below start weight.'); return; }
+    state.profile = {
+      ...state.profile,
+      name: document.getElementById('s-name').value.trim(),
+      startWeight: start,
+      goalWeight: goal,
+      multiplier: parseFloat(document.querySelector('#s-grp-mult .chip.active').dataset.val),
+      deficit: parseFloat(document.querySelector('#s-grp-deficit .chip.active').dataset.val),
+      interval: parseFloat(document.querySelector('#s-grp-interval .chip.active').dataset.val),
+    };
+    await saveState();
+    showToast('Roadmap updated.');
+    renderAll();
+  };
+
+  document.getElementById('btn-reset').onclick = async ()=>{
+    if(!confirm('This will erase your profile and weight history from this device. Continue?')) return;
+    state = { profile:null, weightLogs:[], nutritionLogs:[], ackPhaseId:null };
+    await saveState();
+    boot();
+  };
+}
+
+// ---------------- nav ----------------
+function goTab(tab, subtab){
+  activeTab = tab;
+  if(tab==='log' && subtab){ logSubTab = subtab; }
+  ['dashboard','roadmap','log','settings'].forEach(t=>{
+    document.getElementById('view-'+t).classList.toggle('hidden', t!==tab);
+  });
+  document.querySelectorAll('.tab-btn').forEach(b=> b.classList.toggle('active', b.dataset.tab===tab));
+  if(tab==='log'){ renderLog(); }
+  window.scrollTo(0,0);
+}
+
+function renderAll(){
+  renderDashboard();
+  renderRoadmap();
+  renderLog();
+  renderSettings();
+}
+
+async function boot(){
+  document.getElementById('loading').classList.remove('hidden');
+  document.getElementById('setup-screen').classList.add('hidden');
+  document.getElementById('app').classList.add('hidden');
+
+  await loadState();
+
+  document.getElementById('loading').classList.add('hidden');
+  document.getElementById('today-date').textContent = new Date().toLocaleDateString(undefined,{weekday:'long', month:'short', day:'numeric'});
+
+  if(!state.profile){
+    document.getElementById('setup-screen').classList.remove('hidden');
+    renderSetupScreen();
+  } else {
+    document.getElementById('app').classList.remove('hidden');
+    renderAll();
+    goTab(activeTab);
+  }
+}
+
+boot();
+</script>
+</body>
+</html>
