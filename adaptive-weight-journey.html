@@ -22,6 +22,7 @@
     --card:#FFFFFF;
     --line:#D7DED3;
     --danger:#B4553F;
+    --sky:#4C7EA8;
     --radius:16px;
     --shadow: 0 1px 2px rgba(21,33,25,0.04), 0 4px 16px rgba(21,33,25,0.06);
   }
@@ -280,6 +281,23 @@ let activeTab = 'dashboard';
 let editingActivityDate = null;
 let activityDraftMeals = [];
 let editActivityDraftMeals = [];
+let calorieBreakdownFilter = 'thisWeek';
+let calorieBreakdownCompareOn = false;
+let calorieBreakdownCompareFilter = 'lastWeek';
+
+const MEAL_CATEGORIES = ['Breakfast','Lunch','Dinner','Snack','Drinks','Other'];
+const MEAL_CATEGORY_COLORS = { Breakfast:'var(--gold)', Lunch:'var(--pine)', Dinner:'var(--pine-dark)', Snack:'var(--moss)', Drinks:'var(--sky)', Other:'var(--ink-soft)' };
+const DATE_FILTERS = [
+  {val:'today', label:'Today'},
+  {val:'yesterday', label:'Yesterday'},
+  {val:'thisWeek', label:'This Week'},
+  {val:'lastWeek', label:'Last Week'},
+  {val:'thisMonth', label:'This Month'},
+  {val:'lastMonth', label:'Last Month'},
+  {val:'thisYear', label:'This Year'},
+  {val:'lastYear', label:'Last Year'},
+  {val:'allTime', label:'All Time'},
+];
 
 // ---------------- persistence ----------------
 // Legacy entries stored a single flat `calories` number; newer entries store a
@@ -287,8 +305,9 @@ let editActivityDraftMeals = [];
 function migrateNutritionLogs(){
   state.nutritionLogs.forEach(n=>{
     if(!Array.isArray(n.meals)){
-      n.meals = n.calories ? [{id: cryptoId(), label:'', calories:n.calories}] : [];
+      n.meals = n.calories ? [{id: cryptoId(), label:'Other', calories:n.calories}] : [];
     }
+    n.meals.forEach(m=>{ if(!MEAL_CATEGORIES.includes(m.label)) m.label = 'Other'; });
   });
 }
 
@@ -852,6 +871,200 @@ function renderSetupScreen(){
 function cryptoId(){ return 'id'+Math.random().toString(36).slice(2,10)+Date.now().toString(36); }
 
 // ---------------- dashboard ----------------
+// ---------------- calorie breakdown (donut chart + date filters) ----------------
+function startOfDay(d){ return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
+function endOfDay(d){ return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23,59,59,999); }
+
+function dateFilterLabel(val){ return (DATE_FILTERS.find(f=>f.val===val)||{}).label || val; }
+
+function getDateRange(preset){
+  const today = startOfDay(new Date());
+  let start, end = today;
+  switch(preset){
+    case 'today':
+      start = today; break;
+    case 'yesterday':
+      start = new Date(today); start.setDate(start.getDate()-1);
+      end = start; break;
+    case 'thisWeek':
+      start = new Date(today); start.setDate(start.getDate() - today.getDay());
+      break;
+    case 'lastWeek': {
+      const thisWeekStart = new Date(today); thisWeekStart.setDate(thisWeekStart.getDate() - today.getDay());
+      start = new Date(thisWeekStart); start.setDate(start.getDate()-7);
+      end = new Date(thisWeekStart); end.setDate(end.getDate()-1);
+      break;
+    }
+    case 'thisMonth':
+      start = new Date(today.getFullYear(), today.getMonth(), 1);
+      break;
+    case 'lastMonth':
+      start = new Date(today.getFullYear(), today.getMonth()-1, 1);
+      end = new Date(today.getFullYear(), today.getMonth(), 0);
+      break;
+    case 'thisYear':
+      start = new Date(today.getFullYear(), 0, 1);
+      break;
+    case 'lastYear':
+      start = new Date(today.getFullYear()-1, 0, 1);
+      end = new Date(today.getFullYear()-1, 11, 31);
+      break;
+    case 'allTime':
+    default: {
+      const allDates = [...state.weightLogs.map(l=>l.date), ...state.nutritionLogs.map(n=>n.date)];
+      start = allDates.length
+        ? startOfDay(new Date(Math.min(...allDates.map(d=> new Date(d+'T00:00:00').getTime()))))
+        : today;
+      break;
+    }
+  }
+  return { start, end: endOfDay(end) };
+}
+
+function categoryTotalsForRange(preset){
+  const { start, end } = getDateRange(preset);
+  const totals = {};
+  MEAL_CATEGORIES.forEach(c=> totals[c]=0);
+  state.nutritionLogs.forEach(n=>{
+    const d = new Date(n.date+'T00:00:00');
+    if(d < start || d > end) return;
+    (n.meals||[]).forEach(m=>{
+      const cat = MEAL_CATEGORIES.includes(m.label) ? m.label : 'Other';
+      totals[cat] += parseFloat(m.calories)||0;
+    });
+  });
+  return totals;
+}
+
+// Manual donut (stroke-dasharray circle segments) rather than the SVG pathLength
+// attribute, so it renders consistently across older browsers too.
+function renderDonutChart(totals, opts={}){
+  const size = opts.size || 150;
+  const strokeW = opts.strokeWidth || 22;
+  const showLegend = opts.showLegend !== false;
+  const r = (size - strokeW)/2;
+  const cx = size/2, cy = size/2;
+  const circumference = 2*Math.PI*r;
+
+  const entries = MEAL_CATEGORIES.map(c=>({cat:c, val: totals[c]||0})).filter(e=>e.val>0);
+  const total = entries.reduce((s,e)=>s+e.val,0);
+  if(total<=0){
+    return `<div class="empty-state" style="padding:24px 12px;">No calories logged in this range.</div>`;
+  }
+
+  let offset = 0;
+  const arcs = entries.map(e=>{
+    const frac = e.val/total;
+    const len = frac*circumference;
+    const dasharray = `${len} ${circumference-len}`;
+    const dashoffset = -offset;
+    offset += len;
+    return `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${MEAL_CATEGORY_COLORS[e.cat]}" stroke-width="${strokeW}" stroke-dasharray="${dasharray}" stroke-dashoffset="${dashoffset}" transform="rotate(-90 ${cx} ${cy})"/>`;
+  }).join('');
+
+  const svg = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">
+    ${arcs}
+    <text x="${cx}" y="${cy-3}" text-anchor="middle" class="mono" style="font-size:${Math.round(size*0.1)}px; font-weight:700; fill:var(--ink);">${Math.round(total)}</text>
+    <text x="${cx}" y="${cy+13}" text-anchor="middle" style="font-size:9px; fill:var(--moss); text-transform:uppercase; letter-spacing:0.5px;">total cal</text>
+  </svg>`;
+
+  if(!showLegend){
+    return `<div style="display:flex; justify-content:center;">${svg}</div>`;
+  }
+
+  const legend = entries.map(e=>{
+    const pct = Math.round((e.val/total)*1000)/10;
+    return `<div style="display:flex; align-items:center; justify-content:space-between; padding:6px 0; border-bottom:1px solid var(--line);">
+      <div style="display:flex; align-items:center; gap:8px;"><span style="width:10px;height:10px;border-radius:50%;background:${MEAL_CATEGORY_COLORS[e.cat]};flex-shrink:0;"></span><span style="font-size:13px;">${e.cat}</span></div>
+      <div class="mono" style="font-size:13px; font-weight:600;">${Math.round(e.val)} cal <span style="color:var(--moss); font-weight:400;">(${fmt(pct,1)}%)</span></div>
+    </div>`;
+  }).join('');
+
+  return `<div style="display:flex; align-items:center; gap:18px; flex-wrap:wrap;">
+    ${svg}
+    <div style="flex:1; min-width:160px;">${legend}</div>
+  </div>`;
+}
+
+function renderCompareView(filterA, filterB){
+  const totalsA = categoryTotalsForRange(filterA);
+  const totalsB = categoryTotalsForRange(filterB);
+  const totalA = MEAL_CATEGORIES.reduce((s,c)=>s+totalsA[c],0);
+  const totalB = MEAL_CATEGORIES.reduce((s,c)=>s+totalsB[c],0);
+
+  const rows = MEAL_CATEGORIES.map(c=>{
+    const a = totalsA[c], b = totalsB[c];
+    if(a===0 && b===0) return '';
+    const diff = b-a;
+    const diffLabel = diff===0 ? 'No change' : `${diff>0?'+':''}${Math.round(diff)} cal`;
+    const diffColor = diff>0 ? 'var(--danger)' : diff<0 ? 'var(--pine)' : 'var(--moss)';
+    return `<div class="log-entry">
+      <div>
+        <div class="log-date">${c}</div>
+        <div class="log-weight" style="font-size:14.5px;">${Math.round(a)} → ${Math.round(b)} cal</div>
+      </div>
+      <div class="mono" style="font-weight:600; color:${diffColor};">${diffLabel}</div>
+    </div>`;
+  }).join('');
+
+  const totalDiff = totalB-totalA;
+  return `
+    <div class="row2" style="margin-bottom:14px;">
+      <div>
+        <div class="helper" style="margin-bottom:8px; font-weight:600; text-align:center;">${dateFilterLabel(filterA)}</div>
+        ${renderDonutChart(totalsA, {size:120, strokeWidth:18, showLegend:false})}
+      </div>
+      <div>
+        <div class="helper" style="margin-bottom:8px; font-weight:600; text-align:center;">${dateFilterLabel(filterB)}</div>
+        ${renderDonutChart(totalsB, {size:120, strokeWidth:18, showLegend:false})}
+      </div>
+    </div>
+    <div class="helper" style="margin-bottom:8px;">Change by category</div>
+    <div class="stack">${rows || `<div class="empty-state" style="padding:16px 12px;">No calories logged in either range.</div>`}</div>
+    <div class="helper" style="margin-top:12px; text-align:center;">Total: ${Math.round(totalA)} cal → ${Math.round(totalB)} cal (${totalDiff>=0?'+':''}${Math.round(totalDiff)} cal)</div>
+  `;
+}
+
+function renderCalorieBreakdownCard(){
+  const filterChips = (selected)=> DATE_FILTERS.map(f=>`<div class="chip ${selected===f.val?'active':''}" data-filter="${f.val}">${f.label}</div>`).join('');
+
+  return `
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <div class="helper" style="margin-top:0;">See what meal categories use the most calories.</div>
+      <div class="chip ${calorieBreakdownCompareOn?'active':''}" id="cb-compare-toggle" style="cursor:pointer; white-space:nowrap;">Compare</div>
+    </div>
+    <div class="chip-group" id="cb-filter-a" style="margin-bottom:${calorieBreakdownCompareOn?'10px':'14px'};">
+      ${filterChips(calorieBreakdownFilter)}
+    </div>
+    ${calorieBreakdownCompareOn ? `
+    <div class="helper" style="margin:0 0 6px;">Compared against</div>
+    <div class="chip-group" id="cb-filter-b" style="margin-bottom:14px;">
+      ${filterChips(calorieBreakdownCompareFilter)}
+    </div>` : ''}
+
+    ${calorieBreakdownCompareOn ? renderCompareView(calorieBreakdownFilter, calorieBreakdownCompareFilter) : `
+      <div class="helper" style="margin-bottom:10px;">${dateFilterLabel(calorieBreakdownFilter)}</div>
+      ${renderDonutChart(categoryTotalsForRange(calorieBreakdownFilter))}
+    `}
+  </div>
+  `;
+}
+
+function bindCalorieBreakdownControls(){
+  const toggle = document.getElementById('cb-compare-toggle');
+  if(toggle) toggle.onclick = ()=>{ calorieBreakdownCompareOn = !calorieBreakdownCompareOn; renderDashboard(); };
+
+  const groupA = document.getElementById('cb-filter-a');
+  if(groupA) groupA.querySelectorAll('.chip').forEach(c=>{
+    c.onclick = ()=>{ calorieBreakdownFilter = c.dataset.filter; renderDashboard(); };
+  });
+  const groupB = document.getElementById('cb-filter-b');
+  if(groupB) groupB.querySelectorAll('.chip').forEach(c=>{
+    c.onclick = ()=>{ calorieBreakdownCompareFilter = c.dataset.filter; renderDashboard(); };
+  });
+}
+
 function renderDashboard(){
   const p = state.profile;
   const goalType = p.goalType || 'loss';
@@ -953,11 +1166,16 @@ function renderDashboard(){
     <div class="section-title">Your trail</div>
     <div class="card trail-wrap">${renderTrailSVG(phases, avgW)}</div>
 
+    <div class="section-title">Calorie breakdown</div>
+    ${renderCalorieBreakdownCard()}
+
     <div class="section-title">Weight trend</div>
     <div class="card">${renderTrendChart()}</div>
 
     ${renderWeeklyInsight()}
   `;
+
+  bindCalorieBreakdownControls();
 }
 
 // ---------------- calculation details ----------------
@@ -1387,7 +1605,7 @@ function renderRoadmap(){
 }
 
 // ---------------- log tab (unified daily activity: weight + calories) ----------------
-function emptyMealRow(){ return {id:cryptoId(), label:'', calories:''}; }
+function emptyMealRow(){ return {id:cryptoId(), label:'Breakfast', calories:''}; }
 function mealsTotal(meals){ return meals.reduce((s,m)=> s + (parseFloat(m.calories)||0), 0); }
 
 function renderLog(){
@@ -1471,8 +1689,8 @@ function renderLog(){
     const water = parseFloat(document.getElementById('act-water').value) || 0;
     const notes = document.getElementById('act-notes').value.trim();
     const meals = activityDraftMeals
-      .filter(m=> (m.label && m.label.trim()) || (parseFloat(m.calories)>0))
-      .map(m=>({id:m.id||cryptoId(), label:(m.label||'').trim(), calories: parseFloat(m.calories)||0}));
+      .filter(m=> parseFloat(m.calories)>0)
+      .map(m=>({id:m.id||cryptoId(), label: MEAL_CATEGORIES.includes(m.label)?m.label:'Other', calories: parseFloat(m.calories)||0}));
 
     const hasWeight = weightVal > 0;
     const hasMeals = meals.length > 0;
@@ -1536,7 +1754,9 @@ function renderMealRows(containerId, meals, mode){
   if(!el) return;
   const rows = meals.map(m=>`
     <div class="row2" style="margin-bottom:8px; align-items:center;">
-      <input type="text" class="meal-label" data-meal-id="${m.id}" placeholder="e.g. Breakfast" value="${escapeHtml(m.label||'')}">
+      <select class="meal-label" data-meal-id="${m.id}">
+        ${MEAL_CATEGORIES.map(c=>`<option value="${c}" ${m.label===c?'selected':''}>${c}</option>`).join('')}
+      </select>
       <div style="display:flex; gap:6px; align-items:center;">
         <input type="number" class="meal-cal" data-meal-id="${m.id}" placeholder="Calories" inputmode="decimal" value="${m.calories===''||m.calories==null?'':m.calories}" style="flex:1;">
         ${meals.length>1 ? `<button type="button" class="del-btn meal-remove" data-meal-id="${m.id}" aria-label="Remove entry">✕</button>` : ''}
@@ -1552,11 +1772,18 @@ function bindMealHandlers(mode){
   if(!container) return;
   const arr = mode==='new' ? activityDraftMeals : editActivityDraftMeals;
 
-  container.querySelectorAll('.meal-label, .meal-cal').forEach(inp=>{
+  container.querySelectorAll('.meal-label').forEach(sel=>{
+    sel.onchange = ()=>{
+      const m = arr.find(x=>x.id===sel.dataset.mealId);
+      if(!m) return;
+      m.label = sel.value;
+    };
+  });
+  container.querySelectorAll('.meal-cal').forEach(inp=>{
     inp.oninput = ()=>{
       const m = arr.find(x=>x.id===inp.dataset.mealId);
       if(!m) return;
-      if(inp.classList.contains('meal-label')) m.label = inp.value; else m.calories = inp.value;
+      m.calories = inp.value;
       const totalEl = document.getElementById(`${containerId}-total`);
       if(totalEl) totalEl.textContent = `Total: ${mealsTotal(arr)} cal`;
     };
@@ -1654,7 +1881,7 @@ function startEditActivity(date){
   editingActivityDate = date;
   const n = state.nutritionLogs.find(x=>x.date===date);
   editActivityDraftMeals = n && n.meals && n.meals.length
-    ? n.meals.map(m=>({id:m.id||cryptoId(), label:m.label||'', calories:m.calories}))
+    ? n.meals.map(m=>({id:m.id||cryptoId(), label: MEAL_CATEGORIES.includes(m.label)?m.label:'Other', calories:m.calories}))
     : [emptyMealRow()];
   renderLog();
 }
@@ -1668,8 +1895,8 @@ async function saveEditActivity(originalDate){
   const water = parseFloat(document.getElementById('eact-water').value) || 0;
   const notes = document.getElementById('eact-notes').value.trim();
   const meals = editActivityDraftMeals
-    .filter(m=> (m.label && m.label.trim()) || (parseFloat(m.calories)>0))
-    .map(m=>({id:m.id||cryptoId(), label:(m.label||'').trim(), calories: parseFloat(m.calories)||0}));
+    .filter(m=> parseFloat(m.calories)>0)
+    .map(m=>({id:m.id||cryptoId(), label: MEAL_CATEGORIES.includes(m.label)?m.label:'Other', calories: parseFloat(m.calories)||0}));
 
   if(!date){ showToast('Enter a valid date.'); return; }
   const hasWeight = weightVal > 0;
