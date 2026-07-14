@@ -251,7 +251,7 @@
       </button>
       <button class="tab-btn" data-tab="log" onclick="goTab('log')">
         <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20V4m8 8H4"/></svg>
-        <span>Log weight</span>
+        <span>Log</span>
       </button>
       <button class="tab-btn" data-tab="settings" onclick="goTab('settings')">
         <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 4.6a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0019.4 9c.14.36.22.75.22 1.15V10a2 2 0 010 4h-.09c-.4 0-.79.08-1.15.22z"/></svg>
@@ -277,11 +277,21 @@
 const STORAGE_KEY = 'awj:data';
 let state = { profile:null, weightLogs:[], nutritionLogs:[], ackPhaseId:null };
 let activeTab = 'dashboard';
-let editingLogId = null;
-let editingNutritionId = null;
-let logSubTab = 'weight';
+let editingActivityDate = null;
+let activityDraftMeals = [];
+let editActivityDraftMeals = [];
 
 // ---------------- persistence ----------------
+// Legacy entries stored a single flat `calories` number; newer entries store a
+// `meals` array (multiple calorie line-items per day) that gets summed for display.
+function migrateNutritionLogs(){
+  state.nutritionLogs.forEach(n=>{
+    if(!Array.isArray(n.meals)){
+      n.meals = n.calories ? [{id: cryptoId(), label:'', calories:n.calories}] : [];
+    }
+  });
+}
+
 async function loadState(){
   try{
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -289,6 +299,7 @@ async function loadState(){
   }catch(e){ /* no data yet */ }
   if(!state.weightLogs) state.weightLogs = [];
   if(!state.nutritionLogs) state.nutritionLogs = [];
+  migrateNutritionLogs();
 }
 async function saveState(){
   try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
@@ -319,6 +330,7 @@ function importDataFile(file){
     }
     if(!confirm('This will replace all current data on this device with the imported file. Continue?')) return;
     state = { profile: parsed.profile||null, weightLogs: parsed.weightLogs, nutritionLogs: parsed.nutritionLogs, ackPhaseId: parsed.ackPhaseId||null };
+    migrateNutritionLogs();
     await saveState();
     showToast('Data imported.');
     boot();
@@ -372,6 +384,14 @@ function calorieWarning(p, calories){
   return calories < calorieFloor(p);
 }
 
+// Calories are entered as multiple line-items (meals) per day and summed for display.
+function nutritionTotalCalories(n){
+  if(Array.isArray(n.meals) && n.meals.length){
+    return n.meals.reduce((s,m)=> s + (parseFloat(m.calories)||0), 0);
+  }
+  return n.calories || 0;
+}
+
 // TDEE recalculated fresh at a given weight (not scaled proportionally from the
 // starting TDEE) — BMR has a large weight-independent component (height, age,
 // sex), so proportional scaling understates calories at lower weights and
@@ -403,7 +423,7 @@ function computeCalibration(){
   const nCutoff = lastNutritionDate.getTime() - CALIBRATION_WINDOW_DAYS*86400000;
   const recentNutrition = nutrition.filter(n=> new Date(n.date).getTime() >= nCutoff);
   if(recentNutrition.length < MIN_CALIBRATION_NUTRITION_LOGS) return null;
-  const avgDailyEaten = recentNutrition.reduce((s,n)=>s+n.calories,0)/recentNutrition.length;
+  const avgDailyEaten = recentNutrition.reduce((s,n)=>s+nutritionTotalCalories(n),0)/recentNutrition.length;
 
   const weights = [...state.weightLogs].sort((a,b)=> new Date(a.date)-new Date(b.date));
   if(weights.length < MIN_COMPLETION_POINTS) return null;
@@ -849,7 +869,7 @@ function renderDashboard(){
   const remaining = Math.max(0, dir>0 ? (p.goalWeight-avgW) : (avgW-p.goalWeight));
   const distance = Math.max(0, dir>0 ? (active.weightTarget-avgW) : (avgW-active.weightTarget));
   const todaysNutrition = state.nutritionLogs.find(n=>n.date===todayStr());
-  const eatenToday = todaysNutrition ? todaysNutrition.calories : 0;
+  const eatenToday = todaysNutrition ? nutritionTotalCalories(todaysNutrition) : 0;
   const remainingCals = active.eating - eatenToday;
   const tooLow = hasBodyStats(p) && calorieWarning(p, active.eating);
   const currentAdjust = taperedAdjustment(p, active.weightTarget);
@@ -928,10 +948,7 @@ function renderDashboard(){
     ${renderEstimatedTimeline()}
 
     <div class="section-title">Quick log <span style="font-weight:400; color:var(--moss); font-size:12px;">tap to add today's numbers</span></div>
-    <div class="row2">
-      <button class="btn btn-ghost" onclick="goTab('log','weight')">+ Log weight</button>
-      <button class="btn btn-ghost" onclick="goTab('log','calories')">+ Log calories</button>
-    </div>
+    <button class="btn btn-ghost" onclick="goTab('log')">+ Log activity</button>
 
     <div class="section-title">Your trail</div>
     <div class="card trail-wrap">${renderTrailSVG(phases, avgW)}</div>
@@ -1369,330 +1386,324 @@ function renderRoadmap(){
   `;
 }
 
-// ---------------- log tab ----------------
+// ---------------- log tab (unified daily activity: weight + calories) ----------------
+function emptyMealRow(){ return {id:cryptoId(), label:'', calories:''}; }
+function mealsTotal(meals){ return meals.reduce((s,m)=> s + (parseFloat(m.calories)||0), 0); }
+
 function renderLog(){
   const el = document.getElementById('view-log');
-  el.innerHTML = `
-    <h1 class="page-title">Log</h1>
-    <p class="page-sub">Track weight and food to keep your roadmap accurate.</p>
-    <div class="chip-group" id="log-subtabs" style="margin-bottom:18px;">
-      <div class="chip ${logSubTab==='weight'?'active':''}" data-sub="weight">Weight</div>
-      <div class="chip ${logSubTab==='calories'?'active':''}" data-sub="calories">Calories</div>
-    </div>
-    <div id="log-subview"></div>
-  `;
-  document.querySelectorAll('#log-subtabs .chip').forEach(c=>{
-    c.onclick = ()=>{ logSubTab = c.dataset.sub; renderLog(); };
-  });
-  if(logSubTab==='calories'){ renderCaloriesLogView(); } else { renderWeightLogView(); }
-}
+  const p = state.profile;
+  const phases = computePhases(p);
+  const active = getActivePhase(phases, rollingAverageWeight());
+  const proteinGoal = calcProteinGoal(p, rollingAverageWeight());
 
-function renderWeightLogView(){
-  const container = document.getElementById('log-subview');
-  const sorted = [...state.weightLogs].sort((a,b)=> new Date(b.date)-new Date(a.date));
-  container.innerHTML = `
+  const dates = new Set([...state.weightLogs.map(l=>l.date), ...state.nutritionLogs.map(n=>n.date)]);
+  const sortedDates = [...dates].sort((a,b)=> new Date(b)-new Date(a));
+
+  if(activityDraftMeals.length===0) activityDraftMeals = [emptyMealRow()];
+
+  el.innerHTML = `
+    <h1 class="page-title">Log activity</h1>
+    <p class="page-sub">Track weight and food together, by day, to keep your roadmap accurate.</p>
+    <div class="banner" style="margin-bottom:14px;">🎯 <div>Today's target is <strong>${active.eating} calories</strong>, with roughly <strong>${proteinGoal}g protein</strong>.</div></div>
+
     <div class="card stack">
       <div class="row2">
         <div class="field" style="margin-bottom:0;">
           <label>Date</label>
-          <input type="date" id="log-date" value="${todayStr()}">
+          <input type="date" id="act-date" value="${todayStr()}">
         </div>
         <div class="field" style="margin-bottom:0;">
           <label>Weight (lbs)</label>
-          <input type="number" id="log-weight" placeholder="e.g. 301.2" inputmode="decimal">
+          <input type="number" id="act-weight" placeholder="optional" inputmode="decimal">
+        </div>
+      </div>
+      <div class="field" style="margin-bottom:0;">
+        <label>Calories</label>
+        <div id="act-meals"></div>
+        <button type="button" class="btn btn-ghost" id="act-add-meal" style="margin-top:8px;">+ Add</button>
+      </div>
+      <div class="row2">
+        <div class="field" style="margin-bottom:0;">
+          <label>Protein (g)</label>
+          <input type="number" id="act-protein" placeholder="optional" inputmode="decimal">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Water (oz)</label>
+          <input type="number" id="act-water" placeholder="optional" inputmode="decimal">
+        </div>
+      </div>
+      <div class="row2">
+        <div class="field" style="margin-bottom:0;">
+          <label>Carbs (g)</label>
+          <input type="number" id="act-carbs" placeholder="optional" inputmode="decimal">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Fat (g)</label>
+          <input type="number" id="act-fat" placeholder="optional" inputmode="decimal">
         </div>
       </div>
       <div class="field" style="margin-bottom:0;">
         <label>Notes (optional)</label>
-        <textarea id="log-notes" placeholder="Feeling good, workout completed…"></textarea>
+        <textarea id="act-notes" placeholder="Feeling good, workout completed…"></textarea>
       </div>
-      <button class="btn btn-primary" id="btn-log-save">Save entry</button>
+      <button class="btn btn-primary" id="btn-act-save">Save entry</button>
     </div>
 
     <div class="section-title">History</div>
-    ${sorted.length? `<div class="stack">${sorted.map(l=> l.id===editingLogId ? renderEditRow(l) : `
-      <div class="log-entry">
-        <div>
-          <div class="log-date">${prettyDate(l.date)}</div>
-          <div class="log-weight">${fmt(l.weight)} lbs</div>
-          ${l.notes? `<div class="log-note">${escapeHtml(l.notes)}</div>`:''}
-        </div>
-        <div class="log-actions">
-          <button class="del-btn" onclick="startEditLog('${l.id}')" aria-label="Edit entry">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-          </button>
-          <button class="del-btn" onclick="deleteLog('${l.id}')" aria-label="Delete entry">
-            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0l-1 14a2 2 0 01-2 2H7a2 2 0 01-2-2L4 6"/></svg>
-          </button>
-        </div>
-      </div>`).join('')}</div>` : `<div class="empty-state">No entries yet. Log your first weigh-in above.</div>`}
+    ${sortedDates.length? `<div class="stack">${sortedDates.map(date=> date===editingActivityDate ? renderActivityEditRow(date) : renderActivityRow(date)).join('')}</div>` : `<div class="empty-state">No entries yet. Log today's numbers above.</div>`}
   `;
 
-  document.querySelectorAll('[data-edit-save]').forEach(btn=>{
-    btn.onclick = ()=> saveEditLog(btn.dataset.editSave);
-  });
-  document.querySelectorAll('[data-edit-cancel]').forEach(btn=>{
-    btn.onclick = ()=> { editingLogId = null; renderLog(); };
-  });
+  renderMealRows('act-meals', activityDraftMeals, 'new');
+  bindMealHandlers('new');
+  document.getElementById('act-add-meal').onclick = ()=>{
+    activityDraftMeals.push(emptyMealRow());
+    renderMealRows('act-meals', activityDraftMeals, 'new');
+    bindMealHandlers('new');
+  };
 
-  document.getElementById('btn-log-save').onclick = async ()=>{
-    const date = document.getElementById('log-date').value || todayStr();
-    const weight = parseFloat(document.getElementById('log-weight').value);
-    const notes = document.getElementById('log-notes').value.trim();
-    if(!weight || weight<=0){ showToast('Enter a valid weight first.'); return; }
+  document.getElementById('btn-act-save').onclick = async ()=>{
+    const date = document.getElementById('act-date').value || todayStr();
+    const weightVal = parseFloat(document.getElementById('act-weight').value);
+    const protein = parseFloat(document.getElementById('act-protein').value) || 0;
+    const carbs = parseFloat(document.getElementById('act-carbs').value) || 0;
+    const fat = parseFloat(document.getElementById('act-fat').value) || 0;
+    const water = parseFloat(document.getElementById('act-water').value) || 0;
+    const notes = document.getElementById('act-notes').value.trim();
+    const meals = activityDraftMeals
+      .filter(m=> (m.label && m.label.trim()) || (parseFloat(m.calories)>0))
+      .map(m=>({id:m.id||cryptoId(), label:(m.label||'').trim(), calories: parseFloat(m.calories)||0}));
 
-    const existingSameDate = state.weightLogs.find(l=>l.date===date);
-    const outlier = findWeightOutlier(weight, date, existingSameDate?.id);
-    if(outlier && !confirm(`That's ${fmt(outlier.diff,1)} lbs from your last entry (${fmt(outlier.mostRecent.weight)} lbs on ${prettyDate(outlier.mostRecent.date)}). Save ${fmt(weight)} lbs anyway?`)){
-      return;
+    const hasWeight = weightVal > 0;
+    const hasMeals = meals.length > 0;
+    if(!hasWeight && !hasMeals){ showToast('Enter a weight or at least one calorie entry.'); return; }
+
+    if(hasWeight){
+      const existingSameDate = state.weightLogs.find(l=>l.date===date);
+      const outlier = findWeightOutlier(weightVal, date, existingSameDate?.id);
+      if(outlier && !confirm(`That's ${fmt(outlier.diff,1)} lbs from your last entry (${fmt(outlier.mostRecent.weight)} lbs on ${prettyDate(outlier.mostRecent.date)}). Save ${fmt(weightVal)} lbs anyway?`)){
+        return;
+      }
     }
 
     const phasesBefore = computePhases(state.profile);
     const activeBefore = getActivePhase(phasesBefore, rollingAverageWeight());
 
-    state.weightLogs = state.weightLogs.filter(l=>l.date!==date);
-    state.weightLogs.push({id:cryptoId(), date, weight, notes});
+    if(hasWeight){
+      state.weightLogs = state.weightLogs.filter(l=>l.date!==date);
+      state.weightLogs.push({id:cryptoId(), date, weight:weightVal, notes});
+    }
+    if(hasMeals){
+      state.nutritionLogs = state.nutritionLogs.filter(n=>n.date!==date);
+      state.nutritionLogs.push({id:cryptoId(), date, meals, protein, carbs, fat, water});
+    }
     await saveState();
+    activityDraftMeals = [emptyMealRow()];
 
-    const activeAfter = getActivePhase(phasesBefore, rollingAverageWeight());
-    if(activeAfter.id !== activeBefore.id){
-      showToast(`Milestone reached! Calorie target updated from ${activeBefore.eating} to ${activeAfter.eating}.`);
+    if(hasWeight){
+      const activeAfter = getActivePhase(phasesBefore, rollingAverageWeight());
+      if(activeAfter.id !== activeBefore.id){
+        showToast(`Milestone reached! Calorie target updated from ${activeBefore.eating} to ${activeAfter.eating}.`);
+      } else {
+        showToast('Entry saved.');
+      }
     } else {
       showToast('Entry saved.');
     }
     renderAll();
     goTab('dashboard');
   };
+
+  if(editingActivityDate){
+    renderMealRows('eact-meals', editActivityDraftMeals, 'edit');
+    bindMealHandlers('edit');
+    document.getElementById('eact-add-meal').onclick = ()=>{
+      editActivityDraftMeals.push(emptyMealRow());
+      renderMealRows('eact-meals', editActivityDraftMeals, 'edit');
+      bindMealHandlers('edit');
+    };
+    document.getElementById('eact-save').onclick = ()=> saveEditActivity(editingActivityDate);
+    document.getElementById('eact-cancel').onclick = ()=> { editingActivityDate = null; renderLog(); };
+  }
 }
 
-function renderCaloriesLogView(){
-  const container = document.getElementById('log-subview');
-  const p = state.profile;
-  const phases = computePhases(p);
-  const active = getActivePhase(phases, rollingAverageWeight());
-  const calorieTarget = isGoalReached() ? active.eating : active.eating;
-  const proteinGoal = calcProteinGoal(p, rollingAverageWeight());
-  const sorted = [...state.nutritionLogs].sort((a,b)=> new Date(b.date)-new Date(a.date));
-
-  container.innerHTML = `
-    <div class="banner" style="margin-bottom:14px;">🎯 <div>Today's target is <strong>${calorieTarget} calories</strong>, with roughly <strong>${proteinGoal}g protein</strong>.</div></div>
-    <div class="card stack">
-      <div class="row2">
-        <div class="field" style="margin-bottom:0;">
-          <label>Date</label>
-          <input type="date" id="cal-date" value="${todayStr()}">
-        </div>
-        <div class="field" style="margin-bottom:0;">
-          <label>Calories</label>
-          <input type="number" id="cal-calories" placeholder="e.g. 2950" inputmode="decimal">
-        </div>
+// Renders the calorie line-items (meals) for either the new-entry form or the
+// inline edit form. Row add/remove re-renders this block; typing in a row just
+// updates the in-memory draft + running total (see bindMealHandlers) so focus
+// isn't lost on every keystroke.
+function renderMealRows(containerId, meals, mode){
+  const el = document.getElementById(containerId);
+  if(!el) return;
+  const rows = meals.map(m=>`
+    <div class="row2" style="margin-bottom:8px; align-items:center;">
+      <input type="text" class="meal-label" data-meal-id="${m.id}" placeholder="e.g. Breakfast" value="${escapeHtml(m.label||'')}">
+      <div style="display:flex; gap:6px; align-items:center;">
+        <input type="number" class="meal-cal" data-meal-id="${m.id}" placeholder="Calories" inputmode="decimal" value="${m.calories===''||m.calories==null?'':m.calories}" style="flex:1;">
+        ${meals.length>1 ? `<button type="button" class="del-btn meal-remove" data-meal-id="${m.id}" aria-label="Remove entry">✕</button>` : ''}
       </div>
-      <div class="row2">
-        <div class="field" style="margin-bottom:0;">
-          <label>Protein (g)</label>
-          <input type="number" id="cal-protein" placeholder="e.g. 185" inputmode="decimal">
-        </div>
-        <div class="field" style="margin-bottom:0;">
-          <label>Water (oz)</label>
-          <input type="number" id="cal-water" placeholder="e.g. 80" inputmode="decimal">
-        </div>
-      </div>
-      <div class="row2">
-        <div class="field" style="margin-bottom:0;">
-          <label>Carbs (g)</label>
-          <input type="number" id="cal-carbs" placeholder="optional" inputmode="decimal">
-        </div>
-        <div class="field" style="margin-bottom:0;">
-          <label>Fat (g)</label>
-          <input type="number" id="cal-fat" placeholder="optional" inputmode="decimal">
-        </div>
-      </div>
-      <button class="btn btn-primary" id="btn-cal-save">Save entry</button>
     </div>
-
-    <div class="section-title">History</div>
-    ${sorted.length? `<div class="stack">${sorted.map(n=> n.id===editingNutritionId ? renderNutritionEditRow(n) : `
-      <div class="log-entry">
-        <div>
-          <div class="log-date">${prettyDate(n.date)}</div>
-          <div class="log-weight">${n.calories} cal</div>
-          <div class="log-note">${n.protein}g protein${n.carbs? ` · ${n.carbs}g carbs`:''}${n.fat? ` · ${n.fat}g fat`:''}${n.water? ` · ${n.water}oz water`:''}</div>
-        </div>
-        <div class="log-actions">
-          <button class="del-btn" onclick="startEditNutrition('${n.id}')" aria-label="Edit entry">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-          </button>
-          <button class="del-btn" onclick="deleteNutrition('${n.id}')" aria-label="Delete entry">
-            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0l-1 14a2 2 0 01-2 2H7a2 2 0 01-2-2L4 6"/></svg>
-          </button>
-        </div>
-      </div>`).join('')}</div>` : `<div class="empty-state">No entries yet. Log today's food above.</div>`}
-  `;
-
-  document.querySelectorAll('[data-nutri-edit-save]').forEach(btn=>{
-    btn.onclick = ()=> saveEditNutrition(btn.dataset.nutriEditSave);
-  });
-  document.querySelectorAll('[data-nutri-edit-cancel]').forEach(btn=>{
-    btn.onclick = ()=> { editingNutritionId = null; renderLog(); };
-  });
-
-  document.getElementById('btn-cal-save').onclick = async ()=>{
-    const date = document.getElementById('cal-date').value || todayStr();
-    const calories = parseFloat(document.getElementById('cal-calories').value);
-    const protein = parseFloat(document.getElementById('cal-protein').value) || 0;
-    const carbs = parseFloat(document.getElementById('cal-carbs').value) || 0;
-    const fat = parseFloat(document.getElementById('cal-fat').value) || 0;
-    const water = parseFloat(document.getElementById('cal-water').value) || 0;
-    if(!calories || calories<=0){ showToast('Enter a valid calorie amount first.'); return; }
-
-    state.nutritionLogs = state.nutritionLogs.filter(n=>n.date!==date);
-    state.nutritionLogs.push({id:cryptoId(), date, calories, protein, carbs, fat, water});
-    await saveState();
-    showToast('Entry saved.');
-    renderLog();
-  };
+  `).join('');
+  el.innerHTML = rows + `<div class="helper" id="${containerId}-total" style="margin-top:2px;">Total: ${mealsTotal(meals)} cal</div>`;
 }
 
-function renderNutritionEditRow(n){
+function bindMealHandlers(mode){
+  const containerId = mode==='new' ? 'act-meals' : 'eact-meals';
+  const container = document.getElementById(containerId);
+  if(!container) return;
+  const arr = mode==='new' ? activityDraftMeals : editActivityDraftMeals;
+
+  container.querySelectorAll('.meal-label, .meal-cal').forEach(inp=>{
+    inp.oninput = ()=>{
+      const m = arr.find(x=>x.id===inp.dataset.mealId);
+      if(!m) return;
+      if(inp.classList.contains('meal-label')) m.label = inp.value; else m.calories = inp.value;
+      const totalEl = document.getElementById(`${containerId}-total`);
+      if(totalEl) totalEl.textContent = `Total: ${mealsTotal(arr)} cal`;
+    };
+  });
+  container.querySelectorAll('.meal-remove').forEach(btn=>{
+    btn.onclick = ()=>{
+      let newArr = arr.filter(m=>m.id!==btn.dataset.mealId);
+      if(newArr.length===0) newArr.push(emptyMealRow());
+      if(mode==='new') activityDraftMeals = newArr; else editActivityDraftMeals = newArr;
+      renderMealRows(containerId, newArr, mode);
+      bindMealHandlers(mode);
+    };
+  });
+}
+
+function renderActivityRow(date){
+  const w = state.weightLogs.find(l=>l.date===date);
+  const n = state.nutritionLogs.find(x=>x.date===date);
+  const totalCals = n ? nutritionTotalCalories(n) : 0;
+  const mealCount = n && n.meals ? n.meals.length : 0;
+  const macroBits = n && (n.protein||n.carbs||n.fat||n.water) ? `${n.protein?`${n.protein}g protein`:''}${n.carbs? ` · ${n.carbs}g carbs`:''}${n.fat? ` · ${n.fat}g fat`:''}${n.water? ` · ${n.water}oz water`:''}` : '';
+  return `
+    <div class="log-entry" style="align-items:flex-start;">
+      <div>
+        <div class="log-date">${prettyDate(date)}</div>
+        ${w? `<div class="log-weight">${fmt(w.weight)} lbs</div>` : ''}
+        ${n? `<div class="log-weight" style="${w?'margin-top:4px;':''}">${totalCals} cal${mealCount>1? ` <span style="font-weight:400;color:var(--moss);font-size:12px;">(${mealCount} entries)</span>`:''}</div>` : ''}
+        ${macroBits? `<div class="log-note">${macroBits}</div>` : ''}
+        ${w && w.notes? `<div class="log-note">${escapeHtml(w.notes)}</div>`:''}
+      </div>
+      <div class="log-actions">
+        <button class="del-btn" onclick="startEditActivity('${date}')" aria-label="Edit entry">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        </button>
+        <button class="del-btn" onclick="deleteActivity('${date}')" aria-label="Delete entry">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0l-1 14a2 2 0 01-2 2H7a2 2 0 01-2-2L4 6"/></svg>
+        </button>
+      </div>
+    </div>`;
+}
+
+function renderActivityEditRow(date){
+  const w = state.weightLogs.find(l=>l.date===date);
+  const n = state.nutritionLogs.find(x=>x.date===date);
   return `
     <div class="log-edit-card">
       <div class="row2">
         <div class="field" style="margin-bottom:0;">
           <label>Date</label>
-          <input type="date" id="nedit-date-${n.id}" value="${n.date}">
-        </div>
-        <div class="field" style="margin-bottom:0;">
-          <label>Calories</label>
-          <input type="number" id="nedit-calories-${n.id}" value="${n.calories}" inputmode="decimal">
-        </div>
-      </div>
-      <div class="row2" style="margin-top:12px;">
-        <div class="field" style="margin-bottom:0;">
-          <label>Protein (g)</label>
-          <input type="number" id="nedit-protein-${n.id}" value="${n.protein||0}" inputmode="decimal">
-        </div>
-        <div class="field" style="margin-bottom:0;">
-          <label>Water (oz)</label>
-          <input type="number" id="nedit-water-${n.id}" value="${n.water||0}" inputmode="decimal">
-        </div>
-      </div>
-      <div class="row2" style="margin-top:12px;">
-        <div class="field" style="margin-bottom:0;">
-          <label>Carbs (g)</label>
-          <input type="number" id="nedit-carbs-${n.id}" value="${n.carbs||0}" inputmode="decimal">
-        </div>
-        <div class="field" style="margin-bottom:0;">
-          <label>Fat (g)</label>
-          <input type="number" id="nedit-fat-${n.id}" value="${n.fat||0}" inputmode="decimal">
-        </div>
-      </div>
-      <div class="edit-actions">
-        <button class="btn btn-primary" data-nutri-edit-save="${n.id}" style="flex:1;">Save changes</button>
-        <button class="btn btn-ghost" data-nutri-edit-cancel="${n.id}" style="flex:1;">Cancel</button>
-      </div>
-    </div>
-  `;
-}
-
-function startEditNutrition(id){
-  editingNutritionId = id;
-  renderLog();
-}
-
-async function saveEditNutrition(id){
-  const entry = state.nutritionLogs.find(n=>n.id===id);
-  if(!entry) return;
-  const date = document.getElementById(`nedit-date-${id}`).value;
-  const calories = parseFloat(document.getElementById(`nedit-calories-${id}`).value);
-  const protein = parseFloat(document.getElementById(`nedit-protein-${id}`).value) || 0;
-  const water = parseFloat(document.getElementById(`nedit-water-${id}`).value) || 0;
-  const carbs = parseFloat(document.getElementById(`nedit-carbs-${id}`).value) || 0;
-  const fat = parseFloat(document.getElementById(`nedit-fat-${id}`).value) || 0;
-  if(!date || !calories || calories<=0){ showToast('Enter a valid date and calorie amount.'); return; }
-
-  state.nutritionLogs = state.nutritionLogs.filter(n=> n.id===id || n.date!==date);
-  entry.date = date; entry.calories = calories; entry.protein = protein;
-  entry.water = water; entry.carbs = carbs; entry.fat = fat;
-
-  editingNutritionId = null;
-  await saveState();
-  showToast('Entry updated.');
-  renderLog();
-}
-
-async function deleteNutrition(id){
-  if(editingNutritionId===id) editingNutritionId = null;
-  state.nutritionLogs = state.nutritionLogs.filter(n=>n.id!==id);
-  await saveState();
-  showToast('Entry deleted.');
-  renderLog();
-}
-
-function renderEditRow(l){
-  return `
-    <div class="log-edit-card">
-      <div class="row2">
-        <div class="field" style="margin-bottom:0;">
-          <label>Date</label>
-          <input type="date" id="edit-date-${l.id}" value="${l.date}">
+          <input type="date" id="eact-date" value="${date}">
         </div>
         <div class="field" style="margin-bottom:0;">
           <label>Weight (lbs)</label>
-          <input type="number" id="edit-weight-${l.id}" value="${l.weight}" inputmode="decimal">
+          <input type="number" id="eact-weight" value="${w?w.weight:''}" inputmode="decimal">
+        </div>
+      </div>
+      <div class="field" style="margin-bottom:0; margin-top:12px;">
+        <label>Calories</label>
+        <div id="eact-meals"></div>
+        <button type="button" class="btn btn-ghost" id="eact-add-meal" style="margin-top:8px;">+ Add</button>
+      </div>
+      <div class="row2" style="margin-top:12px;">
+        <div class="field" style="margin-bottom:0;">
+          <label>Protein (g)</label>
+          <input type="number" id="eact-protein" value="${n?n.protein||0:0}" inputmode="decimal">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Water (oz)</label>
+          <input type="number" id="eact-water" value="${n?n.water||0:0}" inputmode="decimal">
+        </div>
+      </div>
+      <div class="row2" style="margin-top:12px;">
+        <div class="field" style="margin-bottom:0;">
+          <label>Carbs (g)</label>
+          <input type="number" id="eact-carbs" value="${n?n.carbs||0:0}" inputmode="decimal">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Fat (g)</label>
+          <input type="number" id="eact-fat" value="${n?n.fat||0:0}" inputmode="decimal">
         </div>
       </div>
       <div class="field" style="margin-bottom:0; margin-top:12px;">
         <label>Notes</label>
-        <textarea id="edit-notes-${l.id}">${escapeHtml(l.notes||'')}</textarea>
+        <textarea id="eact-notes">${escapeHtml((w&&w.notes)||'')}</textarea>
       </div>
       <div class="edit-actions">
-        <button class="btn btn-primary" data-edit-save="${l.id}" style="flex:1;">Save changes</button>
-        <button class="btn btn-ghost" data-edit-cancel="${l.id}" style="flex:1;">Cancel</button>
+        <button class="btn btn-primary" id="eact-save" style="flex:1;">Save changes</button>
+        <button class="btn btn-ghost" id="eact-cancel" style="flex:1;">Cancel</button>
       </div>
     </div>
   `;
 }
 
-function startEditLog(id){
-  editingLogId = id;
+function startEditActivity(date){
+  editingActivityDate = date;
+  const n = state.nutritionLogs.find(x=>x.date===date);
+  editActivityDraftMeals = n && n.meals && n.meals.length
+    ? n.meals.map(m=>({id:m.id||cryptoId(), label:m.label||'', calories:m.calories}))
+    : [emptyMealRow()];
   renderLog();
 }
 
-async function saveEditLog(id){
-  const dateEl = document.getElementById(`edit-date-${id}`);
-  const weightEl = document.getElementById(`edit-weight-${id}`);
-  const notesEl = document.getElementById(`edit-notes-${id}`);
-  const date = dateEl.value;
-  const weight = parseFloat(weightEl.value);
-  const notes = notesEl.value.trim();
-  if(!date || !weight || weight<=0){ showToast('Enter a valid date and weight.'); return; }
+async function saveEditActivity(originalDate){
+  const date = document.getElementById('eact-date').value;
+  const weightVal = parseFloat(document.getElementById('eact-weight').value);
+  const protein = parseFloat(document.getElementById('eact-protein').value) || 0;
+  const carbs = parseFloat(document.getElementById('eact-carbs').value) || 0;
+  const fat = parseFloat(document.getElementById('eact-fat').value) || 0;
+  const water = parseFloat(document.getElementById('eact-water').value) || 0;
+  const notes = document.getElementById('eact-notes').value.trim();
+  const meals = editActivityDraftMeals
+    .filter(m=> (m.label && m.label.trim()) || (parseFloat(m.calories)>0))
+    .map(m=>({id:m.id||cryptoId(), label:(m.label||'').trim(), calories: parseFloat(m.calories)||0}));
 
-  const entry = state.weightLogs.find(l=>l.id===id);
-  if(!entry) return;
+  if(!date){ showToast('Enter a valid date.'); return; }
+  const hasWeight = weightVal > 0;
+  const hasMeals = meals.length > 0;
+  if(!hasWeight && !hasMeals){ showToast('Enter a weight or at least one calorie entry.'); return; }
 
-  const outlier = findWeightOutlier(weight, date, id);
-  if(outlier && !confirm(`That's ${fmt(outlier.diff,1)} lbs from your last entry (${fmt(outlier.mostRecent.weight)} lbs on ${prettyDate(outlier.mostRecent.date)}). Save ${fmt(weight)} lbs anyway?`)){
-    return;
+  if(hasWeight){
+    const existingId = state.weightLogs.find(l=>l.date===originalDate)?.id;
+    const outlier = findWeightOutlier(weightVal, date, existingId);
+    if(outlier && !confirm(`That's ${fmt(outlier.diff,1)} lbs from your last entry (${fmt(outlier.mostRecent.weight)} lbs on ${prettyDate(outlier.mostRecent.date)}). Save ${fmt(weightVal)} lbs anyway?`)){
+      return;
+    }
   }
 
-  // if another entry already exists on the new date, merge by removing the duplicate
-  state.weightLogs = state.weightLogs.filter(l=> l.id===id || l.date!==date);
-  entry.date = date;
-  entry.weight = weight;
-  entry.notes = notes;
+  // clear both the original date and the (possibly new) target date, then re-add
+  state.weightLogs = state.weightLogs.filter(l=> l.date!==originalDate && l.date!==date);
+  state.nutritionLogs = state.nutritionLogs.filter(n=> n.date!==originalDate && n.date!==date);
+  if(hasWeight) state.weightLogs.push({id:cryptoId(), date, weight:weightVal, notes});
+  if(hasMeals) state.nutritionLogs.push({id:cryptoId(), date, meals, protein, carbs, fat, water});
 
-  editingLogId = null;
+  editingActivityDate = null;
   await saveState();
   showToast('Entry updated.');
   renderAll();
 }
 
-async function deleteLog(id){
-  if(editingLogId===id) editingLogId = null;
-  state.weightLogs = state.weightLogs.filter(l=>l.id!==id);
+async function deleteActivity(date){
+  if(!confirm("Delete this day's entries (weight and calories)?")) return;
+  if(editingActivityDate===date) editingActivityDate = null;
+  state.weightLogs = state.weightLogs.filter(l=>l.date!==date);
+  state.nutritionLogs = state.nutritionLogs.filter(n=>n.date!==date);
   await saveState();
-  renderAll();
   showToast('Entry deleted.');
+  renderAll();
 }
 
 function escapeHtml(s){
@@ -1915,9 +1926,8 @@ function renderSettings(){
 }
 
 // ---------------- nav ----------------
-function goTab(tab, subtab){
+function goTab(tab){
   activeTab = tab;
-  if(tab==='log' && subtab){ logSubTab = subtab; }
   ['dashboard','roadmap','log','settings'].forEach(t=>{
     document.getElementById('view-'+t).classList.toggle('hidden', t!==tab);
   });
