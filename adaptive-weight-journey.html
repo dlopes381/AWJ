@@ -100,6 +100,12 @@
   textarea{resize:vertical; min-height:56px;}
   .row2{display:grid; grid-template-columns:1fr 1fr; gap:12px;}
   .chip-group{display:flex; flex-wrap:wrap; gap:8px;}
+
+  .advanced-details summary{
+    cursor:pointer; font-size:12.5px; font-weight:600; color:var(--ink-soft);
+    padding:4px 0; user-select:none;
+  }
+  .advanced-details summary:hover{color:var(--ink);}
   .chip{
     padding:8px 13px; border-radius:999px; border:1px solid var(--line); background:var(--card);
     font-size:13px; font-weight:500; color:var(--ink-soft); cursor:pointer; user-select:none;
@@ -182,16 +188,19 @@
 
   /* ---------- log entries ---------- */
   .log-entry{
-    display:flex; justify-content:space-between; align-items:center;
-    padding:12px 14px; border:1px solid var(--line); border-radius:13px; background:var(--card);
+    display:flex; flex-direction:column; gap:10px;
+    padding:14px; border:1px solid var(--line); border-radius:13px; background:var(--card);
   }
   .log-entry + .log-entry{margin-top:8px;}
-  .log-date{font-size:11.5px; color:var(--moss);}
-  .log-weight{font-family:'IBM Plex Mono'; font-weight:600; font-size:16px; margin-top:2px;}
-  .log-note{font-size:12px; color:var(--ink-soft); margin-top:3px; max-width:200px;}
+  .log-entry-head{display:flex; justify-content:space-between; align-items:center;}
+  .log-date{font-size:12.5px; font-weight:600; color:var(--ink); letter-spacing:0.2px;}
+  .log-stats{display:flex; gap:22px;}
+  .log-stat-label{font-size:10.5px; color:var(--moss); text-transform:uppercase; letter-spacing:0.5px; margin-top:2px;}
+  .log-weight{font-family:'IBM Plex Mono'; font-weight:600; font-size:17px;}
+  .log-note{font-size:12px; color:var(--ink-soft); padding-top:8px; border-top:1px solid var(--line);}
   .log-actions{display:flex; gap:2px;}
-  .del-btn{background:none;border:none;color:var(--moss);padding:6px;cursor:pointer;}
-  .del-btn:hover{color:var(--ink);}
+  .del-btn{background:none;border:none;color:var(--moss);padding:6px;border-radius:8px;cursor:pointer;}
+  .del-btn:hover{color:var(--ink); background:var(--paper-alt);}
   .log-edit-card{
     padding:14px; border:1px solid var(--pine); border-radius:13px; background:var(--pine-tint);
   }
@@ -1153,6 +1162,21 @@ async function quickLogWeight(weightVal){
   renderAll();
 }
 
+// Quick calorie add from the dashboard: appends a single "Other"-labeled line item
+// to today's nutrition log rather than requiring the full itemized meal form.
+async function quickLogCalories(calVal){
+  const date = todayStr();
+  const existing = state.nutritionLogs.find(n=>n.date===date);
+  if(existing){
+    existing.meals = [...existing.meals, {id:cryptoId(), label:'Other', calories:calVal}];
+  } else {
+    state.nutritionLogs.push({id:cryptoId(), date, meals:[{id:cryptoId(), label:'Other', calories:calVal}], protein:0, carbs:0, fat:0, water:0});
+  }
+  await saveState();
+  showToast('Calories logged.');
+  renderAll();
+}
+
 function renderDashboard(){
   const p = state.profile;
   const goalType = p.goalType || 'loss';
@@ -1208,6 +1232,8 @@ function renderDashboard(){
     ${goalDone ? `<div class="banner" style="margin-top:14px;">🎉 <div>Your ${avgCount}-log average has reached your goal weight of ${fmt(p.goalWeight,0)} lbs. You can set a new goal any time from Setup.</div></div>` : ''}
     ${!goalDone && tooLow ? `<div class="banner" style="margin-top:14px; background:#F7E0DA; border-color:#E7B7A8; color:#7A3320;">⚠️ <div>This calorie target may be too aggressive.</div></div>` : ''}
 
+    ${renderWeeklyInsight()}
+
     <div class="stat-grid">
       <div class="stat-box">
         <div class="k">${totalChangeLabel}</div>
@@ -1257,20 +1283,20 @@ function renderDashboard(){
       <div style="width:1px; align-self:stretch; background:var(--line);"></div>
       <div><div class="mono" style="font-size:20px; font-weight:600;">${consistency7}/7</div><div style="font-size:12px; color:var(--moss); margin-top:2px;">days logged this week</div></div>
     </div>
-    <div class="card" style="display:flex; gap:10px; align-items:center; margin-bottom:10px;">
-      <input type="number" id="quick-weight-input" placeholder="Today's weight (lbs)" inputmode="decimal" style="flex:1;" value="${todaysWeightLog ? todaysWeightLog.weight : ''}">
-      <button class="btn btn-primary" id="quick-weight-save" style="white-space:nowrap;">Log weight</button>
+    <div class="card stack" style="margin-bottom:10px;">
+      <div style="display:flex; gap:10px; align-items:center;">
+        <input type="number" id="quick-weight-input" placeholder="Today's weight (lbs)" inputmode="decimal" style="flex:1;" value="${todaysWeightLog ? todaysWeightLog.weight : ''}">
+        <button class="btn btn-primary" id="quick-weight-save" style="white-space:nowrap;">Log weight</button>
+      </div>
+      <div style="display:flex; gap:10px; align-items:center;">
+        <input type="number" id="quick-cal-input" placeholder="Add calories eaten" inputmode="decimal" style="flex:1;">
+        <button class="btn btn-primary" id="quick-cal-save" style="white-space:nowrap;">Log calories</button>
+      </div>
     </div>
     <button class="btn btn-ghost" onclick="goTab('log')">+ Log full activity</button>
 
     <div class="section-title">Your trail</div>
     <div class="card trail-wrap">${renderTrailSVG(phases, avgW)}</div>
-
-    <div class="section-title">Calorie breakdown</div>
-    ${renderCalorieBreakdownCard()}
-
-    <div class="section-title">Calorie intake trend <span style="font-weight:400; color:var(--moss); font-size:12px;">7-day &amp; 14-day rolling avg</span></div>
-    <div class="card">${renderRollingCalorieChart()}</div>
 
     <div class="section-title">Weight trend</div>
     <div class="card">${renderTrendChart()}</div>
@@ -1278,7 +1304,11 @@ function renderDashboard(){
     <div class="section-title">Rolling weight average <span style="font-weight:400; color:var(--moss); font-size:12px;">7-day &amp; 14-day</span></div>
     <div class="card">${renderRollingWeightChart()}</div>
 
-    ${renderWeeklyInsight()}
+    <div class="section-title">Calorie breakdown</div>
+    ${renderCalorieBreakdownCard()}
+
+    <div class="section-title">Calorie intake trend <span style="font-weight:400; color:var(--moss); font-size:12px;">7-day &amp; 14-day rolling avg</span></div>
+    <div class="card">${renderRollingCalorieChart()}</div>
   `;
 
   bindCalorieBreakdownControls();
@@ -1291,6 +1321,15 @@ function renderDashboard(){
     await quickLogWeight(val);
   };
   quickInput.onkeydown = (e)=>{ if(e.key==='Enter') quickBtn.click(); };
+
+  const quickCalBtn = document.getElementById('quick-cal-save');
+  const quickCalInput = document.getElementById('quick-cal-input');
+  quickCalBtn.onclick = async ()=>{
+    const val = parseFloat(quickCalInput.value);
+    if(!(val>0)){ showToast('Enter a valid calorie amount.'); return; }
+    await quickLogCalories(val);
+  };
+  quickCalInput.onkeydown = (e)=>{ if(e.key==='Enter') quickCalBtn.click(); };
 }
 
 // ---------------- calculation details ----------------
@@ -1842,26 +1881,29 @@ function renderLog(){
         <div id="act-meals"></div>
         <button type="button" class="btn btn-ghost" id="act-add-meal" style="margin-top:8px;">+ Add</button>
       </div>
-      <div class="row2">
-        <div class="field" style="margin-bottom:0;">
-          <label>Protein (g)</label>
-          <input type="number" id="act-protein" placeholder="optional" inputmode="decimal">
+      <details class="advanced-details">
+        <summary>Protein, carbs, fat &amp; water <span style="font-weight:400; color:var(--moss);">(optional)</span></summary>
+        <div class="row2" style="margin-top:12px;">
+          <div class="field" style="margin-bottom:0;">
+            <label>Protein (g)</label>
+            <input type="number" id="act-protein" placeholder="optional" inputmode="decimal">
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label>Water (oz)</label>
+            <input type="number" id="act-water" placeholder="optional" inputmode="decimal">
+          </div>
         </div>
-        <div class="field" style="margin-bottom:0;">
-          <label>Water (oz)</label>
-          <input type="number" id="act-water" placeholder="optional" inputmode="decimal">
+        <div class="row2" style="margin-top:12px;">
+          <div class="field" style="margin-bottom:0;">
+            <label>Carbs (g)</label>
+            <input type="number" id="act-carbs" placeholder="optional" inputmode="decimal">
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label>Fat (g)</label>
+            <input type="number" id="act-fat" placeholder="optional" inputmode="decimal">
+          </div>
         </div>
-      </div>
-      <div class="row2">
-        <div class="field" style="margin-bottom:0;">
-          <label>Carbs (g)</label>
-          <input type="number" id="act-carbs" placeholder="optional" inputmode="decimal">
-        </div>
-        <div class="field" style="margin-bottom:0;">
-          <label>Fat (g)</label>
-          <input type="number" id="act-fat" placeholder="optional" inputmode="decimal">
-        </div>
-      </div>
+      </details>
       <div class="field" style="margin-bottom:0;">
         <label>Notes (optional)</label>
         <textarea id="act-notes" placeholder="Feeling good, workout completed…"></textarea>
@@ -2011,22 +2053,23 @@ function renderActivityRow(date){
   const mealCount = n && n.meals ? n.meals.length : 0;
   const macroBits = n && (n.protein||n.carbs||n.fat||n.water) ? `${n.protein?`${n.protein}g protein`:''}${n.carbs? ` · ${n.carbs}g carbs`:''}${n.fat? ` · ${n.fat}g fat`:''}${n.water? ` · ${n.water}oz water`:''}` : '';
   return `
-    <div class="log-entry" style="align-items:flex-start;">
-      <div>
+    <div class="log-entry">
+      <div class="log-entry-head">
         <div class="log-date">${prettyDate(date)}</div>
-        ${w? `<div class="log-weight">${fmt(w.weight)} lbs</div>` : ''}
-        ${n? `<div class="log-weight" style="${w?'margin-top:4px;':''}">${totalCals} cal${mealCount>1? ` <span style="font-weight:400;color:var(--moss);font-size:12px;">(${mealCount} entries)</span>`:''}</div>` : ''}
-        ${macroBits? `<div class="log-note">${macroBits}</div>` : ''}
-        ${w && w.notes? `<div class="log-note">${escapeHtml(w.notes)}</div>`:''}
+        <div class="log-actions">
+          <button class="del-btn" onclick="startEditActivity('${date}')" aria-label="Edit entry">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          </button>
+          <button class="del-btn" onclick="deleteActivity('${date}')" aria-label="Delete entry">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0l-1 14a2 2 0 01-2 2H7a2 2 0 01-2-2L4 6"/></svg>
+          </button>
+        </div>
       </div>
-      <div class="log-actions">
-        <button class="del-btn" onclick="startEditActivity('${date}')" aria-label="Edit entry">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-        </button>
-        <button class="del-btn" onclick="deleteActivity('${date}')" aria-label="Delete entry">
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0l-1 14a2 2 0 01-2 2H7a2 2 0 01-2-2L4 6"/></svg>
-        </button>
-      </div>
+      ${w || n ? `<div class="log-stats">
+        ${w? `<div><div class="log-weight">${fmt(w.weight)} lbs</div><div class="log-stat-label">weight</div></div>` : ''}
+        ${n? `<div><div class="log-weight">${totalCals} cal</div><div class="log-stat-label">calories${mealCount>1? ` · ${mealCount} entries`:''}</div></div>` : ''}
+      </div>` : ''}
+      ${macroBits || (w && w.notes) ? `<div class="log-note">${[macroBits, w && w.notes ? escapeHtml(w.notes) : ''].filter(Boolean).join('<br>')}</div>` : ''}
     </div>`;
 }
 
@@ -2050,26 +2093,29 @@ function renderActivityEditRow(date){
         <div id="eact-meals"></div>
         <button type="button" class="btn btn-ghost" id="eact-add-meal" style="margin-top:8px;">+ Add</button>
       </div>
-      <div class="row2" style="margin-top:12px;">
-        <div class="field" style="margin-bottom:0;">
-          <label>Protein (g)</label>
-          <input type="number" id="eact-protein" value="${n?n.protein||0:0}" inputmode="decimal">
+      <details class="advanced-details" style="margin-top:12px;"${n && (n.protein||n.carbs||n.fat||n.water) ? ' open' : ''}>
+        <summary>Protein, carbs, fat &amp; water <span style="font-weight:400; color:var(--moss);">(optional)</span></summary>
+        <div class="row2" style="margin-top:12px;">
+          <div class="field" style="margin-bottom:0;">
+            <label>Protein (g)</label>
+            <input type="number" id="eact-protein" value="${n?n.protein||0:0}" inputmode="decimal">
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label>Water (oz)</label>
+            <input type="number" id="eact-water" value="${n?n.water||0:0}" inputmode="decimal">
+          </div>
         </div>
-        <div class="field" style="margin-bottom:0;">
-          <label>Water (oz)</label>
-          <input type="number" id="eact-water" value="${n?n.water||0:0}" inputmode="decimal">
+        <div class="row2" style="margin-top:12px;">
+          <div class="field" style="margin-bottom:0;">
+            <label>Carbs (g)</label>
+            <input type="number" id="eact-carbs" value="${n?n.carbs||0:0}" inputmode="decimal">
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label>Fat (g)</label>
+            <input type="number" id="eact-fat" value="${n?n.fat||0:0}" inputmode="decimal">
+          </div>
         </div>
-      </div>
-      <div class="row2" style="margin-top:12px;">
-        <div class="field" style="margin-bottom:0;">
-          <label>Carbs (g)</label>
-          <input type="number" id="eact-carbs" value="${n?n.carbs||0:0}" inputmode="decimal">
-        </div>
-        <div class="field" style="margin-bottom:0;">
-          <label>Fat (g)</label>
-          <input type="number" id="eact-fat" value="${n?n.fat||0:0}" inputmode="decimal">
-        </div>
-      </div>
+      </details>
       <div class="field" style="margin-bottom:0; margin-top:12px;">
         <label>Notes</label>
         <textarea id="eact-notes">${escapeHtml((w&&w.notes)||'')}</textarea>
