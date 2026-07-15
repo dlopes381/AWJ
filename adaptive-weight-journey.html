@@ -97,6 +97,7 @@
   input:focus, select:focus, textarea:focus, button:focus-visible{
     outline:2px solid var(--pine); outline-offset:1px;
   }
+  input[readonly]{background:var(--paper-alt); color:var(--ink-soft); cursor:default;}
   textarea{resize:vertical; min-height:56px;}
   .row2{display:grid; grid-template-columns:1fr 1fr; gap:12px;}
   .chip-group{display:flex; flex-wrap:wrap; gap:8px;}
@@ -1306,19 +1307,19 @@ function renderDashboard(){
     <div class="card" style="margin-bottom:10px;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
         <div style="font-size:12.5px; font-weight:600; color:var(--ink);">Today, ${prettyDate(todayStr())}</div>
-        ${todaysLogged ? `<span style="font-size:11px; color:var(--moss);">Already logged — editing</span>` : ''}
+        ${todaysLogged ? `<span style="font-size:11px; color:var(--moss);">Already logged</span>` : ''}
       </div>
       <div class="row2">
         <div class="field" style="margin-bottom:0;">
           <label>Weight (lbs)</label>
-          <input type="number" id="quick-weight-input" placeholder="optional" inputmode="decimal" value="${todaysWeightLog ? todaysWeightLog.weight : ''}">
+          <input type="number" id="quick-weight-input" placeholder="optional" inputmode="decimal" value="${todaysWeightLog ? todaysWeightLog.weight : ''}" ${todaysLogged?'readonly':''}>
         </div>
         <div class="field" style="margin-bottom:0;">
           <label>Calories</label>
-          <input type="number" id="quick-cal-input" placeholder="optional" inputmode="decimal" value="${todaysNutritionLog ? nutritionTotalCalories(todaysNutritionLog) : ''}">
+          <input type="number" id="quick-cal-input" placeholder="optional" inputmode="decimal" value="${todaysNutritionLog ? nutritionTotalCalories(todaysNutritionLog) : ''}" ${todaysLogged?'readonly':''}>
         </div>
       </div>
-      <button class="btn btn-primary" id="quick-entry-save" style="width:100%; margin-top:12px;">${todaysLogged ? "Update today's entry" : "Log today's entry"}</button>
+      <button class="btn btn-primary" id="quick-entry-save" style="width:100%; margin-top:12px;">${todaysLogged ? "Edit today's entry" : "Log today's entry"}</button>
     </div>
     <button class="btn btn-ghost" onclick="goTab('log')">+ Log full activity (itemized meals, protein, notes)</button>
 
@@ -1344,6 +1345,14 @@ function renderDashboard(){
   const quickCalInput = document.getElementById('quick-cal-input');
   const quickEntryBtn = document.getElementById('quick-entry-save');
   quickEntryBtn.onclick = async ()=>{
+    // Today's entry already exists — hand off to the full Log tab's edit row
+    // (itemized meals, protein/carbs/fat/water, notes) rather than re-saving
+    // blind from these two bare fields.
+    if(todaysLogged){
+      goTab('log');
+      startEditActivity(todayStr());
+      return;
+    }
     const weightRaw = quickWeightInput.value.trim();
     const calRaw = quickCalInput.value.trim();
     const weightVal = weightRaw ? parseFloat(weightRaw) : null;
