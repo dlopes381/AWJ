@@ -1169,8 +1169,14 @@ function renderDashboard(){
     <div class="section-title">Calorie breakdown</div>
     ${renderCalorieBreakdownCard()}
 
+    <div class="section-title">Calorie intake trend <span style="font-weight:400; color:var(--moss); font-size:12px;">7-day &amp; 14-day rolling avg</span></div>
+    <div class="card">${renderRollingCalorieChart()}</div>
+
     <div class="section-title">Weight trend</div>
     <div class="card">${renderTrendChart()}</div>
+
+    <div class="section-title">Rolling weight average <span style="font-weight:400; color:var(--moss); font-size:12px;">7-day &amp; 14-day</span></div>
+    <div class="card">${renderRollingWeightChart()}</div>
 
     ${renderWeeklyInsight()}
   `;
@@ -1491,6 +1497,11 @@ function renderEstimatedTimeline(){
   `;
 }
 
+// A slope measured over just a day or two of noisy day-to-day weight fluctuation
+// is too unreliable to extrapolate into a "lbs/week" claim (see estimateCompletion,
+// which applies the same kind of guard to its longer-range projection).
+const MIN_TREND_SPAN_DAYS = 4;
+
 function renderTrendChart(){
   const trend = computeTrend();
   if(!trend){
@@ -1498,6 +1509,7 @@ function renderTrendChart(){
   }
   const { logs, ys, slope, intercept, xs, slopePerWeek } = trend;
   const n = logs.length;
+  const daysSpan = xs[n-1] - xs[0];
   const stepX = Math.max(28, Math.min(50, 340/(n-1||1)));
   const padTop=18, padBottom=26, padLeft=14;
   const w = Math.max(280, padLeft*2 + (n-1)*stepX);
@@ -1520,7 +1532,9 @@ function renderTrendChart(){
   const trendX2 = mapX(n-1), trendY2 = mapY(yEnd);
 
   let color, label, arrow;
-  if(slopePerWeek <= -2.5){
+  if(daysSpan < MIN_TREND_SPAN_DAYS){
+    color='var(--moss)'; label=`Only ${Math.round(daysSpan)} day${Math.round(daysSpan)===1?'':'s'} of history so far — keep logging for a reliable weekly trend`; arrow='flat';
+  } else if(slopePerWeek <= -2.5){
     color='var(--gold)'; label=`Losing fast — about ${fmt(Math.abs(slopePerWeek))} lbs/week`; arrow='down';
   } else if(slopePerWeek <= -0.75){
     color='var(--pine)'; label=`Trending down — about ${fmt(Math.abs(slopePerWeek))} lbs/week`; arrow='down';
@@ -1547,6 +1561,69 @@ function renderTrendChart(){
     </div>
     <div class="trend-sub">Based on your last ${n} weigh-ins, from ${prettyDate(logs[0].date)} to ${prettyDate(logs[n-1].date)}.</div>
   `;
+}
+
+// ---------------- rolling average charts (7-day / 14-day) ----------------
+// Unlike rollingAverageWeight() (last N log entries), these average by trailing
+// calendar days so the window reflects actual elapsed time even with logging gaps.
+function rollingWindowSeries(sortedLogs, dateKey, valueFn, windowDays){
+  return sortedLogs.map(entry=>{
+    const d = new Date(entry[dateKey]).getTime();
+    const cutoff = d - (windowDays-1)*86400000;
+    const inWindow = sortedLogs.filter(e=>{
+      const t = new Date(e[dateKey]).getTime();
+      return t >= cutoff && t <= d;
+    });
+    return inWindow.reduce((s,e)=>s+valueFn(e),0)/inWindow.length;
+  });
+}
+
+function renderRollingLineChart(logs, dateKey, valueFn, opts={}){
+  const unit = opts.unit || '';
+  const decimals = opts.decimals===undefined ? 1 : opts.decimals;
+  const sorted = [...logs].sort((a,b)=> new Date(a[dateKey])-new Date(b[dateKey]));
+  if(sorted.length < 2){
+    return `<div class="empty-state">Log at least 2 days to see rolling averages.</div>`;
+  }
+  const r7 = rollingWindowSeries(sorted, dateKey, valueFn, 7);
+  const r14 = rollingWindowSeries(sorted, dateKey, valueFn, 14);
+  const n = sorted.length;
+  const stepX = Math.max(28, Math.min(50, 340/(n-1||1)));
+  const padTop=18, padBottom=26, padLeft=14;
+  const w = Math.max(280, padLeft*2 + (n-1)*stepX);
+  const h = 150;
+  const allVals = [...r7, ...r14];
+  const minV = Math.min(...allVals), maxV = Math.max(...allVals);
+  const range = (maxV - minV) || 1;
+  const plotTop = padTop, plotBottom = h - padBottom;
+  const mapY = (val)=> plotTop + ((maxV - val)/range) * (plotBottom - plotTop);
+  const mapX = (i)=> padLeft + i*stepX;
+  const pathFor = (series)=> series.map((v,i)=> (i===0? `M ${mapX(i)} ${mapY(v)}` : ` L ${mapX(i)} ${mapY(v)}`)).join('');
+  const dots7 = r7.map((v,i)=>`<circle cx="${mapX(i)}" cy="${mapY(v)}" r="2.5" fill="var(--pine)"/>`).join('');
+  const last7 = r7[r7.length-1], last14 = r14[r14.length-1];
+
+  return `
+    <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:10px; font-size:13px;">
+      <span style="display:flex; align-items:center; gap:6px;"><span style="width:10px;height:10px;border-radius:50%;background:var(--pine);"></span>7-day avg: <strong class="mono">${fmt(last7,decimals)}${unit}</strong></span>
+      <span style="display:flex; align-items:center; gap:6px;"><span style="width:10px;height:2px;background:var(--gold);"></span>14-day avg: <strong class="mono">${fmt(last14,decimals)}${unit}</strong></span>
+    </div>
+    <div class="trail-wrap">
+      <svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg">
+        <path d="${pathFor(r14)}" fill="none" stroke="var(--gold)" stroke-width="2.5" stroke-dasharray="5 5" stroke-linecap="round"/>
+        <path d="${pathFor(r7)}" fill="none" stroke="var(--pine)" stroke-width="2.5" stroke-linecap="round"/>
+        ${dots7}
+      </svg>
+    </div>
+    <div class="trend-sub">Rolling averages from ${prettyDate(sorted[0][dateKey])} to ${prettyDate(sorted[n-1][dateKey])}, based on ${n} logged day${n===1?'':'s'}.</div>
+  `;
+}
+
+function renderRollingWeightChart(){
+  return renderRollingLineChart(state.weightLogs, 'date', l=>l.weight, {unit:' lbs', decimals:1});
+}
+
+function renderRollingCalorieChart(){
+  return renderRollingLineChart(state.nutritionLogs, 'date', n=>nutritionTotalCalories(n), {unit:' cal', decimals:0});
 }
 
 function renderWeeklyInsight(){
