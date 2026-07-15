@@ -33,7 +33,7 @@ Runs a full-history linear regression (`computeTrend`/`leastSquaresSlope`) over 
 
 ## Rolling average charts (7-day / 14-day)
 Two additional dashboard charts — "Calorie intake trend" (below Calorie breakdown) and "Rolling weight average" (below Weight trend) — smooth out day-to-day noise by averaging over a trailing *calendar-day* window at each logged date, via the shared `rollingWindowSeries(sortedLogs, dateKey, valueFn, windowDays)` helper. This differs from `rollingAverageWeight()`, which averages the last N *entries* regardless of date spacing — the rolling-chart windows are strictly calendar-day-based (7 and 14 days), so they stay meaningful even with logging gaps.
-- `renderRollingLineChart(logs, dateKey, valueFn, opts)` is a generic renderer shared by both charts: draws a solid pine 7-day line and dashed gold 14-day line, dots on the 7-day series, and the latest 7-/14-day averages as text above the chart.
+- `renderRollingLineChart(logs, dateKey, valueFn, opts)` is a generic renderer shared by both charts. The 14-day average is the primary/headline series (thicker solid pine line, dots, listed first in the legend and tooltip) since it's less noisy day-to-day; the 7-day average is secondary context (thinner dashed gold line, drawn underneath).
 - `renderRollingWeightChart()` feeds it `state.weightLogs` / weight; `renderRollingCalorieChart()` feeds it `state.nutritionLogs` / `nutritionTotalCalories(n)`.
 - O(n²) (each point's window is recomputed by filtering the full sorted array) — acceptable given personal-tracking data volumes; not optimized further.
 
