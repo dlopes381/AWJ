@@ -4,6 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <title>Adaptive Weight Journey</title>
+<meta name="theme-color" content="#2B6355">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="AWJ">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%232B6355'/%3E%3Cpath d='M3 20L9 8L13 14L16 9L21 20' stroke='white' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%232B6355'/%3E%3Cpath d='M3 20L9 8L13 14L16 9L21 20' stroke='white' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3C/svg%3E">
+<link rel="manifest" href='data:application/manifest+json,{"name":"Adaptive Weight Journey","short_name":"AWJ","start_url":".","display":"standalone","background_color":"%23EEF2EC","theme_color":"%232B6355"}'>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -593,11 +601,60 @@ function prettyDate(d){
   const dt = new Date(d+'T00:00:00');
   return dt.toLocaleDateString(undefined, {month:'short', day:'numeric'});
 }
-function showToast(msg){
+// opts.actionLabel + opts.onAction render a clickable action (e.g. "Undo") inside the toast.
+function showToast(msg, opts={}){
   const t = document.createElement('div');
-  t.className='toast'; t.textContent=msg;
+  t.className='toast';
+  if(opts.actionLabel && opts.onAction){
+    const label = document.createElement('span');
+    label.textContent = msg;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = opts.actionLabel;
+    btn.style.cssText = 'margin-left:12px;background:none;border:none;color:var(--gold-tint);font-weight:700;text-decoration:underline;cursor:pointer;padding:0;font-size:13.5px;';
+    btn.onclick = async ()=>{ t.remove(); await opts.onAction(); };
+    t.appendChild(label);
+    t.appendChild(btn);
+  } else {
+    t.textContent = msg;
+  }
   document.body.appendChild(t);
-  setTimeout(()=>t.remove(), 3800);
+  setTimeout(()=>t.remove(), opts.duration || 3800);
+}
+
+// ---------------- engagement (streaks & consistency) ----------------
+// A logged day counts toward the streak/consistency stats if either weight or
+// nutrition was recorded that date — matches how the Log tab's History treats a day.
+function loggedDatesSet(){
+  return new Set([...state.weightLogs.map(l=>l.date), ...state.nutritionLogs.map(n=>n.date)]);
+}
+function dateKeyFor(d){
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+// Counts consecutive logged days ending today. If today hasn't been logged yet,
+// counting starts from yesterday so the streak doesn't reset to 0 first thing each morning.
+function computeLoggingStreak(){
+  const dates = loggedDatesSet();
+  if(dates.size===0) return 0;
+  const cursor = new Date(todayStr()+'T00:00:00');
+  if(!dates.has(dateKeyFor(cursor))) cursor.setDate(cursor.getDate()-1);
+  let streak = 0;
+  while(dates.has(dateKeyFor(cursor))){
+    streak++;
+    cursor.setDate(cursor.getDate()-1);
+  }
+  return streak;
+}
+// How many of the last `days` calendar days (including today) have a logged entry.
+function loggingConsistency(days=7){
+  const dates = loggedDatesSet();
+  const cursor = new Date(todayStr()+'T00:00:00');
+  let count = 0;
+  for(let i=0;i<days;i++){
+    if(dates.has(dateKeyFor(cursor))) count++;
+    cursor.setDate(cursor.getDate()-1);
+  }
+  return count;
 }
 
 // ---------------- setup screen ----------------
@@ -1065,6 +1122,37 @@ function bindCalorieBreakdownControls(){
   });
 }
 
+// One-tap weight entry from the dashboard, separate from the full Log activity form.
+// Preserves any existing same-day notes rather than blanking them (the full form
+// would otherwise overwrite them since it has no notes field of its own here).
+async function quickLogWeight(weightVal){
+  const date = todayStr();
+  const existing = state.weightLogs.find(l=>l.date===date);
+  const outlier = findWeightOutlier(weightVal, date, existing?.id);
+  if(outlier && !confirm(`That's ${fmt(outlier.diff,1)} lbs from your last entry (${fmt(outlier.mostRecent.weight)} lbs on ${prettyDate(outlier.mostRecent.date)}). Save ${fmt(weightVal)} lbs anyway?`)){
+    return;
+  }
+  const p = state.profile;
+  const phases = computePhases(p);
+  const activeBefore = getActivePhase(phases, rollingAverageWeight());
+  const goalBefore = isGoalReached();
+
+  state.weightLogs = state.weightLogs.filter(l=>l.date!==date);
+  state.weightLogs.push({id:cryptoId(), date, weight:weightVal, notes: existing ? existing.notes : ''});
+  await saveState();
+
+  const activeAfter = getActivePhase(phases, rollingAverageWeight());
+  const goalAfter = isGoalReached();
+  if(goalAfter && !goalBefore){
+    showToast(`🎉 Goal reached! You hit your target weight of ${fmt(p.goalWeight,0)} lbs.`);
+  } else if(activeAfter.id !== activeBefore.id){
+    showToast(`🏁 Milestone reached! Calorie target updated from ${activeBefore.eating} to ${activeAfter.eating}.`);
+  } else {
+    showToast('Weight logged.');
+  }
+  renderAll();
+}
+
 function renderDashboard(){
   const p = state.profile;
   const goalType = p.goalType || 'loss';
@@ -1089,6 +1177,9 @@ function renderDashboard(){
   const taperedNote = p.taperDeficit && currentAdjust !== p.deficit ? ' (tapered)' : '';
   const deficitLabel = goalType==='gain' ? `${currentAdjust} cal surplus${taperedNote}` : goalType==='maintain' ? 'Maintaining' : `${currentAdjust} cal deficit${taperedNote}`;
   const calibration = hasBodyStats(p) ? computeCalibration() : null;
+  const streak = computeLoggingStreak();
+  const consistency7 = loggingConsistency(7);
+  const todaysWeightLog = state.weightLogs.find(l=>l.date===todayStr());
 
   const el = document.getElementById('view-dashboard');
   el.innerHTML = `
@@ -1161,7 +1252,16 @@ function renderDashboard(){
     ${renderEstimatedTimeline()}
 
     <div class="section-title">Quick log <span style="font-weight:400; color:var(--moss); font-size:12px;">tap to add today's numbers</span></div>
-    <button class="btn btn-ghost" onclick="goTab('log')">+ Log activity</button>
+    <div class="card" style="display:flex; align-items:center; justify-content:space-around; text-align:center; padding:14px; margin-bottom:10px;">
+      <div><div class="mono" style="font-size:20px; font-weight:600;">🔥 ${streak}</div><div style="font-size:12px; color:var(--moss); margin-top:2px;">day streak</div></div>
+      <div style="width:1px; align-self:stretch; background:var(--line);"></div>
+      <div><div class="mono" style="font-size:20px; font-weight:600;">${consistency7}/7</div><div style="font-size:12px; color:var(--moss); margin-top:2px;">days logged this week</div></div>
+    </div>
+    <div class="card" style="display:flex; gap:10px; align-items:center; margin-bottom:10px;">
+      <input type="number" id="quick-weight-input" placeholder="Today's weight (lbs)" inputmode="decimal" style="flex:1;" value="${todaysWeightLog ? todaysWeightLog.weight : ''}">
+      <button class="btn btn-primary" id="quick-weight-save" style="white-space:nowrap;">Log weight</button>
+    </div>
+    <button class="btn btn-ghost" onclick="goTab('log')">+ Log full activity</button>
 
     <div class="section-title">Your trail</div>
     <div class="card trail-wrap">${renderTrailSVG(phases, avgW)}</div>
@@ -1182,6 +1282,15 @@ function renderDashboard(){
   `;
 
   bindCalorieBreakdownControls();
+
+  const quickBtn = document.getElementById('quick-weight-save');
+  const quickInput = document.getElementById('quick-weight-input');
+  quickBtn.onclick = async ()=>{
+    const val = parseFloat(quickInput.value);
+    if(!(val>0)){ showToast('Enter a valid weight.'); return; }
+    await quickLogWeight(val);
+  };
+  quickInput.onkeydown = (e)=>{ if(e.key==='Enter') quickBtn.click(); };
 }
 
 // ---------------- calculation details ----------------
@@ -1351,9 +1460,11 @@ function renderTrailSVG(phases, cw){
   </div>`;
 }
 
-function showTrailTip(evt, label){
+// tipId defaults to 'trail-tip' so existing callers (the Trail chart) are unaffected;
+// other charts on the same page pass their own tipId so tooltips don't collide.
+function showTrailTip(evt, label, tipId){
+  const tip = document.getElementById(tipId || 'trail-tip');
   const wrap = evt.currentTarget.closest('.trail-tip-wrap');
-  const tip = document.getElementById('trail-tip');
   if(!wrap || !tip) return;
   const rect = wrap.getBoundingClientRect();
   tip.textContent = label;
@@ -1367,8 +1478,8 @@ function showTrailTip(evt, label){
   tip.style.top = (evt.clientY - rect.top) + 'px';
   tip.style.transform = 'translate(-50%,-115%)';
 }
-function hideTrailTip(){
-  const tip = document.getElementById('trail-tip');
+function hideTrailTip(tipId){
+  const tip = document.getElementById(tipId || 'trail-tip');
   if(tip) tip.style.display = 'none';
 }
 
@@ -1545,19 +1656,25 @@ function renderTrendChart(){
   }
   const arrowGlyph = arrow==='down' ? '&#8595;' : arrow==='up' ? '&#8593;' : '&#8594;';
 
-  const dots = logs.map((l,i)=>`<circle cx="${mapX(i)}" cy="${mapY(l.weight)}" r="3.5" fill="var(--card)" stroke="var(--ink-soft)" stroke-width="1.4"/>`).join('');
+  const dots = logs.map((l,i)=>{
+    const x = mapX(i), y = mapY(l.weight);
+    const tipLabel = `${prettyDate(l.date)} — ${fmt(l.weight)} lbs`;
+    return `<circle cx="${x}" cy="${y}" r="10" fill="transparent" style="cursor:pointer;" onmousemove="showTrailTip(event,'${tipLabel}','trend-tip')" onmouseleave="hideTrailTip('trend-tip')"></circle>
+      <circle cx="${x}" cy="${y}" r="3.5" fill="var(--card)" stroke="var(--ink-soft)" stroke-width="1.4" style="pointer-events:none;"/>`;
+  }).join('');
 
   return `
     <div class="trend-label">
       <span class="trend-arrow" style="background:${color}22; color:${color};">${arrowGlyph}</span>
       <span style="color:${color};">${label}</span>
     </div>
-    <div class="trail-wrap">
+    <div class="trail-wrap trail-tip-wrap" style="position:relative;">
       <svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg">
         <line x1="${trendX1}" y1="${trendY1}" x2="${trendX2}" y2="${trendY2}" stroke="${color}" stroke-width="2.5" stroke-dasharray="5 5" stroke-linecap="round"/>
         <path d="${lineD}" fill="none" stroke="var(--ink-soft)" stroke-width="2"/>
         ${dots}
       </svg>
+      <div id="trend-tip" class="mono" style="display:none; position:absolute; pointer-events:none; background:var(--pine-dark); color:#fff; font-size:11.5px; padding:5px 9px; border-radius:8px; white-space:nowrap; transform:translate(-50%,-115%); z-index:5;"></div>
     </div>
     <div class="trend-sub">Based on your last ${n} weigh-ins, from ${prettyDate(logs[0].date)} to ${prettyDate(logs[n-1].date)}.</div>
   `;
@@ -1599,7 +1716,13 @@ function renderRollingLineChart(logs, dateKey, valueFn, opts={}){
   const mapY = (val)=> plotTop + ((maxV - val)/range) * (plotBottom - plotTop);
   const mapX = (i)=> padLeft + i*stepX;
   const pathFor = (series)=> series.map((v,i)=> (i===0? `M ${mapX(i)} ${mapY(v)}` : ` L ${mapX(i)} ${mapY(v)}`)).join('');
-  const dots7 = r7.map((v,i)=>`<circle cx="${mapX(i)}" cy="${mapY(v)}" r="2.5" fill="var(--pine)"/>`).join('');
+  const tipId = opts.tipId || 'rolling-tip';
+  const dots7 = r7.map((v,i)=>{
+    const x = mapX(i), y = mapY(v);
+    const tipLabel = `${prettyDate(sorted[i][dateKey])} — 7-day: ${fmt(v,decimals)}${unit}, 14-day: ${fmt(r14[i],decimals)}${unit}`;
+    return `<circle cx="${x}" cy="${y}" r="10" fill="transparent" style="cursor:pointer;" onmousemove="showTrailTip(event,'${tipLabel}','${tipId}')" onmouseleave="hideTrailTip('${tipId}')"></circle>
+      <circle cx="${x}" cy="${y}" r="2.5" fill="var(--pine)" style="pointer-events:none;"/>`;
+  }).join('');
   const last7 = r7[r7.length-1], last14 = r14[r14.length-1];
 
   return `
@@ -1607,23 +1730,24 @@ function renderRollingLineChart(logs, dateKey, valueFn, opts={}){
       <span style="display:flex; align-items:center; gap:6px;"><span style="width:10px;height:10px;border-radius:50%;background:var(--pine);"></span>7-day avg: <strong class="mono">${fmt(last7,decimals)}${unit}</strong></span>
       <span style="display:flex; align-items:center; gap:6px;"><span style="width:10px;height:2px;background:var(--gold);"></span>14-day avg: <strong class="mono">${fmt(last14,decimals)}${unit}</strong></span>
     </div>
-    <div class="trail-wrap">
+    <div class="trail-wrap trail-tip-wrap" style="position:relative;">
       <svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg">
         <path d="${pathFor(r14)}" fill="none" stroke="var(--gold)" stroke-width="2.5" stroke-dasharray="5 5" stroke-linecap="round"/>
         <path d="${pathFor(r7)}" fill="none" stroke="var(--pine)" stroke-width="2.5" stroke-linecap="round"/>
         ${dots7}
       </svg>
+      <div id="${tipId}" class="mono" style="display:none; position:absolute; pointer-events:none; background:var(--pine-dark); color:#fff; font-size:11.5px; padding:5px 9px; border-radius:8px; white-space:nowrap; transform:translate(-50%,-115%); z-index:5;"></div>
     </div>
     <div class="trend-sub">Rolling averages from ${prettyDate(sorted[0][dateKey])} to ${prettyDate(sorted[n-1][dateKey])}, based on ${n} logged day${n===1?'':'s'}.</div>
   `;
 }
 
 function renderRollingWeightChart(){
-  return renderRollingLineChart(state.weightLogs, 'date', l=>l.weight, {unit:' lbs', decimals:1});
+  return renderRollingLineChart(state.weightLogs, 'date', l=>l.weight, {unit:' lbs', decimals:1, tipId:'rollw-tip'});
 }
 
 function renderRollingCalorieChart(){
-  return renderRollingLineChart(state.nutritionLogs, 'date', n=>nutritionTotalCalories(n), {unit:' cal', decimals:0});
+  return renderRollingLineChart(state.nutritionLogs, 'date', n=>nutritionTotalCalories(n), {unit:' cal', decimals:0, tipId:'rollc-tip'});
 }
 
 function renderWeeklyInsight(){
@@ -1783,6 +1907,7 @@ function renderLog(){
 
     const phasesBefore = computePhases(state.profile);
     const activeBefore = getActivePhase(phasesBefore, rollingAverageWeight());
+    const goalBefore = isGoalReached();
 
     if(hasWeight){
       state.weightLogs = state.weightLogs.filter(l=>l.date!==date);
@@ -1797,8 +1922,11 @@ function renderLog(){
 
     if(hasWeight){
       const activeAfter = getActivePhase(phasesBefore, rollingAverageWeight());
-      if(activeAfter.id !== activeBefore.id){
-        showToast(`Milestone reached! Calorie target updated from ${activeBefore.eating} to ${activeAfter.eating}.`);
+      const goalAfter = isGoalReached();
+      if(goalAfter && !goalBefore){
+        showToast(`🎉 Goal reached! You hit your target weight of ${fmt(state.profile.goalWeight,0)} lbs.`);
+      } else if(activeAfter.id !== activeBefore.id){
+        showToast(`🏁 Milestone reached! Calorie target updated from ${activeBefore.eating} to ${activeAfter.eating}.`);
       } else {
         showToast('Entry saved.');
       }
@@ -2001,13 +2129,20 @@ async function saveEditActivity(originalDate){
 }
 
 async function deleteActivity(date){
-  if(!confirm("Delete this day's entries (weight and calories)?")) return;
   if(editingActivityDate===date) editingActivityDate = null;
+  const removedWeight = state.weightLogs.filter(l=>l.date===date);
+  const removedNutrition = state.nutritionLogs.filter(n=>n.date===date);
+  if(!removedWeight.length && !removedNutrition.length) return;
   state.weightLogs = state.weightLogs.filter(l=>l.date!==date);
   state.nutritionLogs = state.nutritionLogs.filter(n=>n.date!==date);
   await saveState();
-  showToast('Entry deleted.');
   renderAll();
+  showToast("Entry deleted.", { actionLabel:'Undo', duration:5000, onAction: async ()=>{
+    state.weightLogs.push(...removedWeight);
+    state.nutritionLogs.push(...removedNutrition);
+    await saveState();
+    renderAll();
+  }});
 }
 
 function escapeHtml(s){
