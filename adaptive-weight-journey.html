@@ -1838,12 +1838,23 @@ function renderWeeklyInsight(){
   const prev7 = logs.filter(l=> { const days = (now-new Date(l.date))/86400000; return days>7 && days<=14; });
   if(last7.length<2 || prev7.length<2) return '';
   const avg = arr => arr.reduce((s,l)=>s+l.weight,0)/arr.length;
-  const rate = avg(prev7) - avg(last7);
+  const rate = avg(prev7) - avg(last7); // positive = losing week-over-week
   let msg, tone='pine-tint';
   if(rate > 3){ msg = `You're averaging about ${fmt(rate)} lbs/week — faster than the ideal 1–2 lbs. Consider adding 100–200 calories to protect your energy and muscle.`; }
   else if(rate >= 1){ msg = `Great pace — you're averaging about ${fmt(rate)} lbs/week, right in the ideal 1–2 lb range. Keep going.`; }
   else if(rate > 0){ msg = `Progress has slowed to about ${fmt(rate)} lbs/week. If this continues for a few more weeks, consider a small calorie cut or adding activity.`; }
   else { msg = `Your weight hasn't moved much this week. That's normal short-term — keep logging and watch the weekly trend.`; }
+
+  // This 2-week snapshot can visibly disagree with the longer-history Weight trend
+  // chart if a single unusual weigh-in falls inside one of the 7-day windows — flag
+  // it rather than leave two contradictory-looking numbers unexplained on the page.
+  const trend = computeTrend();
+  if(trend){
+    const longTermRate = -trend.slopePerWeek; // same sign convention as `rate` (positive = losing)
+    if(Math.abs(rate - longTermRate) > 2){
+      msg += ` (Your longer-term Weight trend below tells a different story — a single unusual weigh-in in the last two weeks can skew this short-term number.)`;
+    }
+  }
   return `<div class="section-title">Weekly insight</div><div class="banner">📊 <div>${msg}</div></div>`;
 }
 
@@ -2259,15 +2270,16 @@ function renderSettings(){
           <input type="text" id="s-name" value="${p.name||''}">
         </div>
         <div class="row2">
-          <div class="field">
-            <label>Current weight (lbs)</label>
+          <div class="field" style="margin-bottom:0;">
+            <label>Starting weight (lbs)</label>
             <input type="number" id="s-current" value="${p.startWeight||''}">
           </div>
-          <div class="field">
+          <div class="field" style="margin-bottom:0;">
             <label>Height (inches)</label>
             <input type="number" id="s-height" value="${p.height||''}">
           </div>
         </div>
+        <div class="helper" style="margin-top:8px;">This is the baseline your roadmap was built from, not necessarily today's weight — log day-to-day weigh-ins from the Log tab instead.</div>
         <div class="row2">
           <div class="field" style="margin-bottom:0;">
             <label>Age</label>
