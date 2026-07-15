@@ -1134,46 +1134,64 @@ function bindCalorieBreakdownControls(){
 // One-tap weight entry from the dashboard, separate from the full Log activity form.
 // Preserves any existing same-day notes rather than blanking them (the full form
 // would otherwise overwrite them since it has no notes field of its own here).
-async function quickLogWeight(weightVal){
+// One-tap entry from the dashboard, always scoped to today's date (matches the card's
+// "Today, <date>" label — there's no date picker here, that's what the full Log tab is for).
+// weightVal/calVal are null when that field was left blank.
+// Weight replaces today's weigh-in (like the full form). Calories only touches
+// today's nutrition log if the number actually differs from today's current total,
+// so re-saving an unchanged, prefilled total can't silently flatten an itemized
+// multi-meal day down to a single "Other" line.
+async function quickLogEntry(weightVal, calVal){
   const date = todayStr();
-  const existing = state.weightLogs.find(l=>l.date===date);
-  const outlier = findWeightOutlier(weightVal, date, existing?.id);
-  if(outlier && !confirm(`That's ${fmt(outlier.diff,1)} lbs from your last entry (${fmt(outlier.mostRecent.weight)} lbs on ${prettyDate(outlier.mostRecent.date)}). Save ${fmt(weightVal)} lbs anyway?`)){
-    return;
+  const existingWeight = state.weightLogs.find(l=>l.date===date);
+  const existingNutrition = state.nutritionLogs.find(n=>n.date===date);
+  const currentTotal = existingNutrition ? nutritionTotalCalories(existingNutrition) : 0;
+
+  const hasWeight = weightVal !== null && weightVal > 0;
+  const calChanged = calVal !== null && calVal !== currentTotal;
+  if(!hasWeight && !calChanged){ showToast('Enter a weight or a new calorie amount.'); return; }
+
+  if(hasWeight){
+    const outlier = findWeightOutlier(weightVal, date, existingWeight?.id);
+    if(outlier && !confirm(`That's ${fmt(outlier.diff,1)} lbs from your last entry (${fmt(outlier.mostRecent.weight)} lbs on ${prettyDate(outlier.mostRecent.date)}). Save ${fmt(weightVal)} lbs anyway?`)){
+      return;
+    }
   }
+
   const p = state.profile;
   const phases = computePhases(p);
   const activeBefore = getActivePhase(phases, rollingAverageWeight());
   const goalBefore = isGoalReached();
+  const wasLogged = !!(existingWeight || existingNutrition);
 
-  state.weightLogs = state.weightLogs.filter(l=>l.date!==date);
-  state.weightLogs.push({id:cryptoId(), date, weight:weightVal, notes: existing ? existing.notes : ''});
+  if(hasWeight){
+    state.weightLogs = state.weightLogs.filter(l=>l.date!==date);
+    state.weightLogs.push({id:cryptoId(), date, weight:weightVal, notes: existingWeight ? existingWeight.notes : ''});
+  }
+  if(calChanged){
+    state.nutritionLogs = state.nutritionLogs.filter(n=>n.date!==date);
+    if(calVal > 0){
+      state.nutritionLogs.push({
+        id:cryptoId(), date,
+        meals:[{id:cryptoId(), label:'Other', calories:calVal}],
+        protein: existingNutrition?existingNutrition.protein:0,
+        carbs: existingNutrition?existingNutrition.carbs:0,
+        fat: existingNutrition?existingNutrition.fat:0,
+        water: existingNutrition?existingNutrition.water:0
+      });
+    }
+  }
   await saveState();
 
   const activeAfter = getActivePhase(phases, rollingAverageWeight());
   const goalAfter = isGoalReached();
   if(goalAfter && !goalBefore){
     showToast(`🎉 Goal reached! You hit your target weight of ${fmt(p.goalWeight,0)} lbs.`);
-  } else if(activeAfter.id !== activeBefore.id){
+  } else if(hasWeight && activeAfter.id !== activeBefore.id){
     showToast(`🏁 Milestone reached! Calorie target updated from ${activeBefore.eating} to ${activeAfter.eating}.`);
   } else {
-    showToast('Weight logged.');
+    showToast(wasLogged ? "Today's entry updated." : "Today's entry logged.");
   }
-  renderAll();
-}
-
-// Quick calorie add from the dashboard: appends a single "Other"-labeled line item
-// to today's nutrition log rather than requiring the full itemized meal form.
-async function quickLogCalories(calVal){
-  const date = todayStr();
-  const existing = state.nutritionLogs.find(n=>n.date===date);
-  if(existing){
-    existing.meals = [...existing.meals, {id:cryptoId(), label:'Other', calories:calVal}];
-  } else {
-    state.nutritionLogs.push({id:cryptoId(), date, meals:[{id:cryptoId(), label:'Other', calories:calVal}], protein:0, carbs:0, fat:0, water:0});
-  }
-  await saveState();
-  showToast('Calories logged.');
   renderAll();
 }
 
@@ -1204,6 +1222,8 @@ function renderDashboard(){
   const streak = computeLoggingStreak();
   const consistency7 = loggingConsistency(7);
   const todaysWeightLog = state.weightLogs.find(l=>l.date===todayStr());
+  const todaysNutritionLog = state.nutritionLogs.find(n=>n.date===todayStr());
+  const todaysLogged = !!(todaysWeightLog || todaysNutritionLog);
 
   const el = document.getElementById('view-dashboard');
   el.innerHTML = `
@@ -1283,17 +1303,24 @@ function renderDashboard(){
       <div style="width:1px; align-self:stretch; background:var(--line);"></div>
       <div><div class="mono" style="font-size:20px; font-weight:600;">${consistency7}/7</div><div style="font-size:12px; color:var(--moss); margin-top:2px;">days logged this week</div></div>
     </div>
-    <div class="card stack" style="margin-bottom:10px;">
-      <div style="display:flex; gap:10px; align-items:center;">
-        <input type="number" id="quick-weight-input" placeholder="Today's weight (lbs)" inputmode="decimal" style="flex:1;" value="${todaysWeightLog ? todaysWeightLog.weight : ''}">
-        <button class="btn btn-primary" id="quick-weight-save" style="white-space:nowrap;">Log weight</button>
+    <div class="card" style="margin-bottom:10px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+        <div style="font-size:12.5px; font-weight:600; color:var(--ink);">Today, ${prettyDate(todayStr())}</div>
+        ${todaysLogged ? `<span style="font-size:11px; color:var(--moss);">Already logged — editing</span>` : ''}
       </div>
-      <div style="display:flex; gap:10px; align-items:center;">
-        <input type="number" id="quick-cal-input" placeholder="Add calories eaten" inputmode="decimal" style="flex:1;">
-        <button class="btn btn-primary" id="quick-cal-save" style="white-space:nowrap;">Log calories</button>
+      <div class="row2">
+        <div class="field" style="margin-bottom:0;">
+          <label>Weight (lbs)</label>
+          <input type="number" id="quick-weight-input" placeholder="optional" inputmode="decimal" value="${todaysWeightLog ? todaysWeightLog.weight : ''}">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Calories</label>
+          <input type="number" id="quick-cal-input" placeholder="optional" inputmode="decimal" value="${todaysNutritionLog ? nutritionTotalCalories(todaysNutritionLog) : ''}">
+        </div>
       </div>
+      <button class="btn btn-primary" id="quick-entry-save" style="width:100%; margin-top:12px;">${todaysLogged ? "Update today's entry" : "Log today's entry"}</button>
     </div>
-    <button class="btn btn-ghost" onclick="goTab('log')">+ Log full activity</button>
+    <button class="btn btn-ghost" onclick="goTab('log')">+ Log full activity (itemized meals, protein, notes)</button>
 
     <div class="section-title">Your trail</div>
     <div class="card trail-wrap">${renderTrailSVG(phases, avgW)}</div>
@@ -1313,23 +1340,20 @@ function renderDashboard(){
 
   bindCalorieBreakdownControls();
 
-  const quickBtn = document.getElementById('quick-weight-save');
-  const quickInput = document.getElementById('quick-weight-input');
-  quickBtn.onclick = async ()=>{
-    const val = parseFloat(quickInput.value);
-    if(!(val>0)){ showToast('Enter a valid weight.'); return; }
-    await quickLogWeight(val);
-  };
-  quickInput.onkeydown = (e)=>{ if(e.key==='Enter') quickBtn.click(); };
-
-  const quickCalBtn = document.getElementById('quick-cal-save');
+  const quickWeightInput = document.getElementById('quick-weight-input');
   const quickCalInput = document.getElementById('quick-cal-input');
-  quickCalBtn.onclick = async ()=>{
-    const val = parseFloat(quickCalInput.value);
-    if(!(val>0)){ showToast('Enter a valid calorie amount.'); return; }
-    await quickLogCalories(val);
+  const quickEntryBtn = document.getElementById('quick-entry-save');
+  quickEntryBtn.onclick = async ()=>{
+    const weightRaw = quickWeightInput.value.trim();
+    const calRaw = quickCalInput.value.trim();
+    const weightVal = weightRaw ? parseFloat(weightRaw) : null;
+    const calVal = calRaw ? parseFloat(calRaw) : null;
+    if(weightRaw && !(weightVal>0)){ showToast('Enter a valid weight.'); return; }
+    if(calRaw && !(calVal>=0)){ showToast('Enter a valid calorie amount.'); return; }
+    await quickLogEntry(weightVal, calVal);
   };
-  quickCalInput.onkeydown = (e)=>{ if(e.key==='Enter') quickCalBtn.click(); };
+  quickWeightInput.onkeydown = (e)=>{ if(e.key==='Enter') quickEntryBtn.click(); };
+  quickCalInput.onkeydown = (e)=>{ if(e.key==='Enter') quickEntryBtn.click(); };
 }
 
 // ---------------- calculation details ----------------
