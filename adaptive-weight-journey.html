@@ -1335,6 +1335,7 @@ function renderDashboard(){
 
     <div class="section-title">Rolling weight average <span style="font-weight:400; color:var(--moss); font-size:12px;">7-day &amp; 14-day</span></div>
     <div class="card">${renderRollingWeightChart()}</div>
+    ${renderRollingWeightInsight()}
 
     <div class="section-title">Calorie breakdown</div>
     ${renderCalorieBreakdownCard()}
@@ -1827,6 +1828,62 @@ function renderRollingWeightChart(){
 
 function renderRollingCalorieChart(){
   return renderRollingLineChart(state.nutritionLogs, 'date', n=>nutritionTotalCalories(n), {unit:' cal', decimals:0, tipId:'rollc-tip'});
+}
+
+// Momentum read on the 7-day vs 14-day rolling averages themselves (distinct from
+// renderWeeklyInsight's raw last-7-vs-prior-7 comparison): since the 14-day window
+// fully contains the 7-day one, (14-day avg − 7-day avg) approximates half of the
+// last week's rate of change under a roughly linear trend, so doubling it gives a
+// comparable "implied lbs/week" figure. Reuses estimateCompletion() for any "days to
+// next phase" figure rather than deriving a second, possibly-conflicting estimate.
+function renderRollingWeightInsight(){
+  const sorted = [...state.weightLogs].sort((a,b)=> new Date(a.date)-new Date(b.date));
+  if(sorted.length < 7) return '';
+  const r7 = rollingWindowSeries(sorted, 'date', l=>l.weight, 7);
+  const r14 = rollingWindowSeries(sorted, 'date', l=>l.weight, 14);
+  const last7 = r7[r7.length-1], last14 = r14[r14.length-1];
+
+  const p = state.profile;
+  const goalType = p.goalType || 'loss';
+  const goalDir = goalType==='gain' ? -1 : 1; // for gain, "good" momentum is the opposite sign of raw
+  const raw = last14 - last7; // positive when the 7-day average sits below the 14-day average
+  const impliedWeeklyRate = raw * 2 * goalDir;
+
+  let msg;
+  if(goalType==='maintain'){
+    if(Math.abs(impliedWeeklyRate) <= 1){
+      msg = `Your 7-day and 14-day averages are close together — you're holding steady right around your maintenance target.`;
+    } else if(raw > 0){
+      msg = `Your 7-day average has dipped below your 14-day average — you're trending down about ${fmt(Math.abs(impliedWeeklyRate))} lbs/week. Consider adding a bit more food to stay level.`;
+    } else {
+      msg = `Your 7-day average has crept above your 14-day average — you're trending up about ${fmt(Math.abs(impliedWeeklyRate))} lbs/week. A small trim to calories should bring you back to level.`;
+    }
+  } else {
+    const verb = goalType==='gain' ? 'gaining' : 'losing';
+    if(impliedWeeklyRate < 0){
+      msg = `Your 7-day average is ${goalType==='gain'?'below':'above'} your 14-day average — recent progress has slowed or reversed slightly (about ${fmt(Math.abs(impliedWeeklyRate))} lbs/week the wrong way). Double-check you're consistently hitting your calorie target.`;
+    } else if(impliedWeeklyRate > 3){
+      msg = `You're ${verb} faster than your recent baseline — about ${fmt(impliedWeeklyRate)} lbs/week over the last week. That's ahead of the typical 1–2 lb/week pace; consider ${goalType==='gain'?'trimming back slightly':'adding 100–200 calories'} to keep it sustainable.`;
+    } else if(impliedWeeklyRate >= 1){
+      msg = `Nice momentum — your 7-day average is pulling your 14-day average ${goalType==='gain'?'up':'down'} at a solid ~${fmt(impliedWeeklyRate)} lbs/week.`;
+    } else {
+      msg = `Your 7-day and 14-day averages are nearly flat against each other — progress has slowed to under a pound a week. If this continues, consider adjusting your calorie target.`;
+    }
+    if(!isGoalReached()){
+      const phases = computePhases(p);
+      const dir = phaseDirection(phases);
+      const avgW = rollingAverageWeight();
+      const active = getActivePhase(phases, avgW);
+      const distance = Math.max(0, dir>0 ? (active.weightTarget-avgW) : (avgW-active.weightTarget));
+      if(distance > 0){
+        const completion = estimateCompletion();
+        const etaNote = completion.status==='ok' && completion.phaseDate ? `, estimated around ${prettyDateObj(completion.phaseDate)} at your current pace` : '';
+        msg += ` You're ${fmt(distance,1)} lbs from your next calorie step at ${fmt(active.weightTarget,0)} lbs${etaNote}.`;
+      }
+    }
+  }
+
+  return `<div class="banner" style="margin-top:12px;">📈 <div>${msg}</div></div>`;
 }
 
 function renderWeeklyInsight(){
