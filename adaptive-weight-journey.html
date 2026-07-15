@@ -299,6 +299,10 @@ let activeTab = 'dashboard';
 let editingActivityDate = null;
 let activityDraftMeals = [];
 let editActivityDraftMeals = [];
+// Set true right before navigating to the Log tab when the caller wants the
+// new-entry form pre-expanded (e.g. dashboard's "+ Log full activity"); consumed
+// (reset to false) the next time renderLog() runs.
+let openLogEntryForm = false;
 let calorieBreakdownFilter = 'thisWeek';
 let calorieBreakdownCompareOn = false;
 let calorieBreakdownCompareFilter = 'lastWeek';
@@ -1321,7 +1325,7 @@ function renderDashboard(){
       </div>
       <button class="btn btn-primary" id="quick-entry-save" style="width:100%; margin-top:12px;">${todaysLogged ? "Edit today's entry" : "Log today's entry"}</button>
     </div>
-    <button class="btn btn-ghost" onclick="goTab('log')">+ Log full activity (itemized meals, protein, notes)</button>
+    <button class="btn btn-ghost" onclick="openLogEntryForm=true; goTab('log')">+ Log full activity (itemized meals, protein, notes)</button>
 
     <div class="section-title">Your trail</div>
     <div class="card trail-wrap">${renderTrailSVG(phases, avgW)}</div>
@@ -1896,56 +1900,65 @@ function renderLog(){
 
   if(activityDraftMeals.length===0) activityDraftMeals = [emptyMealRow()];
 
+  // Consumed once: dashboard's "+ Log full activity" sets this true right before
+  // navigating here so the form opens pre-expanded; every other render collapses it,
+  // since today's weight/calories are normally handled by the dashboard's quick log.
+  const shouldOpenEntry = openLogEntryForm;
+  openLogEntryForm = false;
+
   el.innerHTML = `
     <h1 class="page-title">Log activity</h1>
     <p class="page-sub">Track weight and food together, by day, to keep your roadmap accurate.</p>
     <div class="banner" style="margin-bottom:14px;">🎯 <div>Today's target is <strong>${active.eating} calories</strong>, with roughly <strong>${proteinGoal}g protein</strong>.</div></div>
 
-    <div class="card stack">
-      <div class="row2">
+    <details class="advanced-details"${shouldOpenEntry ? ' open' : ''}>
+      <summary style="font-size:14px; font-weight:600; color:var(--ink); padding:12px 0;">+ Add or back-date an entry</summary>
+      <div class="card stack" style="margin-top:4px;">
+        <div class="row2">
+          <div class="field" style="margin-bottom:0;">
+            <label>Date</label>
+            <input type="date" id="act-date" value="${todayStr()}">
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label>Weight (lbs)</label>
+            <input type="number" id="act-weight" placeholder="optional" inputmode="decimal">
+          </div>
+        </div>
         <div class="field" style="margin-bottom:0;">
-          <label>Date</label>
-          <input type="date" id="act-date" value="${todayStr()}">
+          <label>Calories</label>
+          <div id="act-meals"></div>
+          <button type="button" class="btn btn-ghost" id="act-add-meal" style="margin-top:8px;">+ Add</button>
         </div>
+        <details class="advanced-details">
+          <summary>Protein, carbs, fat &amp; water <span style="font-weight:400; color:var(--moss);">(optional)</span></summary>
+          <div class="row2" style="margin-top:12px;">
+            <div class="field" style="margin-bottom:0;">
+              <label>Protein (g)</label>
+              <input type="number" id="act-protein" placeholder="optional" inputmode="decimal">
+            </div>
+            <div class="field" style="margin-bottom:0;">
+              <label>Water (oz)</label>
+              <input type="number" id="act-water" placeholder="optional" inputmode="decimal">
+            </div>
+          </div>
+          <div class="row2" style="margin-top:12px;">
+            <div class="field" style="margin-bottom:0;">
+              <label>Carbs (g)</label>
+              <input type="number" id="act-carbs" placeholder="optional" inputmode="decimal">
+            </div>
+            <div class="field" style="margin-bottom:0;">
+              <label>Fat (g)</label>
+              <input type="number" id="act-fat" placeholder="optional" inputmode="decimal">
+            </div>
+          </div>
+        </details>
         <div class="field" style="margin-bottom:0;">
-          <label>Weight (lbs)</label>
-          <input type="number" id="act-weight" placeholder="optional" inputmode="decimal">
+          <label>Notes (optional)</label>
+          <textarea id="act-notes" placeholder="Feeling good, workout completed…"></textarea>
         </div>
+        <button class="btn btn-primary" id="btn-act-save">Save entry</button>
       </div>
-      <div class="field" style="margin-bottom:0;">
-        <label>Calories</label>
-        <div id="act-meals"></div>
-        <button type="button" class="btn btn-ghost" id="act-add-meal" style="margin-top:8px;">+ Add</button>
-      </div>
-      <details class="advanced-details">
-        <summary>Protein, carbs, fat &amp; water <span style="font-weight:400; color:var(--moss);">(optional)</span></summary>
-        <div class="row2" style="margin-top:12px;">
-          <div class="field" style="margin-bottom:0;">
-            <label>Protein (g)</label>
-            <input type="number" id="act-protein" placeholder="optional" inputmode="decimal">
-          </div>
-          <div class="field" style="margin-bottom:0;">
-            <label>Water (oz)</label>
-            <input type="number" id="act-water" placeholder="optional" inputmode="decimal">
-          </div>
-        </div>
-        <div class="row2" style="margin-top:12px;">
-          <div class="field" style="margin-bottom:0;">
-            <label>Carbs (g)</label>
-            <input type="number" id="act-carbs" placeholder="optional" inputmode="decimal">
-          </div>
-          <div class="field" style="margin-bottom:0;">
-            <label>Fat (g)</label>
-            <input type="number" id="act-fat" placeholder="optional" inputmode="decimal">
-          </div>
-        </div>
-      </details>
-      <div class="field" style="margin-bottom:0;">
-        <label>Notes (optional)</label>
-        <textarea id="act-notes" placeholder="Feeling good, workout completed…"></textarea>
-      </div>
-      <button class="btn btn-primary" id="btn-act-save">Save entry</button>
-    </div>
+    </details>
 
     <div class="section-title">History</div>
     ${sortedDates.length? `<div class="stack">${sortedDates.map(date=> date===editingActivityDate ? renderActivityEditRow(date) : renderActivityRow(date)).join('')}</div>` : `<div class="empty-state">No entries yet. Log today's numbers above.</div>`}
