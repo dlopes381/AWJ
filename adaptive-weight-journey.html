@@ -84,6 +84,7 @@
     border-radius:var(--radius);
     padding:18px;
     box-shadow:var(--shadow);
+    transition: box-shadow .2s ease;
   }
   .stack > * + *{margin-top:14px;}
   h1.page-title{font-family:'Space Grotesk';font-size:22px;margin:6px 0 2px;letter-spacing:-0.2px;}
@@ -107,26 +108,35 @@
     padding:4px 0; user-select:none;
   }
   .advanced-details summary:hover{color:var(--ink);}
+  .meal-quick-add{margin-bottom:10px;}
+  .meal-quick-add .chip{padding:7px 12px; font-size:12.5px;}
   .chip{
     padding:8px 13px; border-radius:999px; border:1px solid var(--line); background:var(--card);
     font-size:13px; font-weight:500; color:var(--ink-soft); cursor:pointer; user-select:none;
+    transition: background .15s ease, color .15s ease, border-color .15s ease;
   }
   .chip.active{background:var(--pine); border-color:var(--pine); color:#fff;}
   .btn{
     display:inline-flex; align-items:center; justify-content:center; gap:8px;
     width:100%; padding:13px 16px; border-radius:12px; border:none;
     font-family:'IBM Plex Sans'; font-weight:600; font-size:14.5px; cursor:pointer;
+    transition: transform .12s ease, background .15s ease, opacity .15s ease;
   }
+  .btn:active{transform:scale(0.97);}
   .btn-primary{background:var(--pine); color:#fff;}
-  .btn-primary:active{background:var(--pine-dark);}
+  .btn-primary:active{background:var(--pine-dark); transform:scale(0.97);}
   .btn-ghost{background:transparent; color:var(--ink-soft); border:1px solid var(--line);}
   .btn-danger{background:transparent; color:var(--danger); border:1px solid #E7CFC7;}
+  .btn-link{
+    width:auto; padding:6px 2px; background:none; border:none; color:var(--pine);
+    font-weight:600; font-size:12.5px; text-decoration:underline; text-underline-offset:2px;
+  }
   .helper{font-size:12px; color:var(--moss); margin-top:6px; line-height:1.5;}
   .badge{
     display:inline-block; font-size:10.5px; font-weight:700; letter-spacing:0.4px; text-transform:uppercase;
     padding:3px 8px; border-radius:6px;
   }
-  .badge-current{background:var(--gold-tint); color:#8A6110;}
+  .badge-current{background:var(--gold); color:#fff;}
   .badge-reached{background:var(--pine-tint); color:var(--pine-dark);}
   .badge-upcoming{background:var(--paper-alt); color:var(--moss);}
 
@@ -141,11 +151,19 @@
     padding:8px 6px calc(8px + env(safe-area-inset-bottom));
   }
   .tab-btn{
+    position:relative;
     flex:1; display:flex; flex-direction:column; align-items:center; gap:4px;
     background:none; border:none; padding:6px 2px; color:var(--moss); cursor:pointer;
   }
+  .tab-btn svg{transition: transform .15s ease;}
+  .tab-btn span{font-size:10.5px; font-weight:600; letter-spacing:0.2px; transition: font-weight .15s ease, color .15s ease;}
   .tab-btn.active{color:var(--pine);}
-  .tab-btn span{font-size:10.5px; font-weight:600; letter-spacing:0.2px;}
+  .tab-btn.active svg{transform:translateY(-1px) scale(1.08);}
+  .tab-btn.active span{font-weight:700;}
+  .tab-btn.active::after{
+    content:''; position:absolute; bottom:1px; left:50%; transform:translateX(-50%);
+    width:4px; height:4px; border-radius:50%; background:var(--pine);
+  }
 
   /* ---------- dashboard hero ---------- */
   .hero-card{
@@ -160,14 +178,38 @@
   .hero-progress-track{height:8px; border-radius:99px; background:rgba(255,255,255,0.22); margin-top:16px; overflow:hidden;}
   .hero-progress-fill{height:100%; background:var(--gold); border-radius:99px; transition:width .4s ease;}
   .hero-stats{display:flex; justify-content:space-between; margin-top:10px; font-size:11.5px; opacity:0.85;}
+  .hero-target-value{transition: color .2s ease;}
 
-  .stat-grid{display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:14px;}
-  .stat-box{background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px;}
+  .stat-grid{display:grid; grid-template-columns:1fr 1fr; gap:12px;}
+  .stat-box{background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; transition: box-shadow .2s ease;}
   .stat-box .k{font-size:11px; color:var(--moss); text-transform:uppercase; letter-spacing:0.6px;}
   .stat-box .v{font-family:'IBM Plex Mono'; font-size:20px; font-weight:600; margin-top:4px;}
   .stat-box .sub{font-size:12px; color:var(--moss); margin-top:3px;}
 
-  .section-title{font-family:'Space Grotesk'; font-weight:600; font-size:14.5px; margin:22px 0 10px; display:flex; align-items:center; justify-content:space-between;}
+  .section-title{font-family:'Space Grotesk'; font-weight:600; font-size:14.5px; margin:26px 0 12px; display:flex; align-items:center; justify-content:space-between;}
+  .section-title:first-child{margin-top:0;}
+
+  /* ---------- dashboard rhythm ---------- */
+  .dash-top > * + *{margin-top:14px;}
+  .insights-body > * + *{margin-top:0;}
+
+  /* ---------- collapsible sections ---------- */
+  .disclosure{margin-top:4px;}
+  .disclosure > summary{
+    cursor:pointer; list-style:none; user-select:none;
+    display:flex; align-items:center; justify-content:space-between;
+    font-family:'Space Grotesk'; font-weight:600; font-size:14.5px; color:var(--ink);
+    padding:14px 2px; transition: color .15s ease;
+  }
+  .disclosure > summary::-webkit-details-marker{display:none;}
+  .disclosure > summary:hover{color:var(--pine);}
+  .disclosure > summary .disclosure-sub{font-family:'IBM Plex Sans'; font-weight:400; color:var(--moss); font-size:12px; margin-left:8px;}
+  .disclosure > summary .chevron{
+    display:inline-flex; color:var(--moss); transition: transform .25s ease; flex-shrink:0;
+  }
+  .disclosure[open] > summary .chevron{transform:rotate(180deg);}
+  .disclosure-content.fade-in{animation: fadeInUp .28s ease;}
+  @keyframes fadeInUp{ from{opacity:0; transform:translateY(-5px);} to{opacity:1; transform:translateY(0);} }
 
   /* ---------- trail svg ---------- */
   .trail-wrap{overflow-x:auto; -webkit-overflow-scrolling:touch;}
@@ -175,26 +217,55 @@
   .phase-row{
     display:flex; align-items:center; justify-content:space-between;
     padding:13px 14px; border:1px solid var(--line); border-radius:13px; background:var(--card);
+    transition: box-shadow .2s ease, border-color .2s ease, background .2s ease, opacity .2s ease;
   }
   .phase-row + .phase-row{margin-top:8px;}
   .phase-left{display:flex; align-items:center; gap:12px;}
   .phase-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;}
   .phase-target{font-family:'IBM Plex Mono'; font-weight:600; font-size:15px;}
   .phase-cals{font-size:12px; color:var(--moss); margin-top:2px;}
+  .phase-row.phase-completed{opacity:0.6;}
+  .phase-row.phase-current{
+    padding:16px 15px; border-color:var(--pine); border-width:1.5px;
+    box-shadow:0 3px 14px rgba(43,99,85,0.14);
+  }
+  .phase-row.phase-current .phase-target{font-size:17px;}
+  .phase-row.phase-current .phase-dot{width:11px; height:11px;}
 
   .banner{
     display:flex; gap:10px; align-items:flex-start; padding:13px 14px; border-radius:13px;
     background:var(--gold-tint); border:1px solid #F0DFAF; font-size:13px; color:#7A5A0C; line-height:1.45;
   }
 
+  /* ---------- milestone card ---------- */
+  .milestone-card{
+    padding:16px 18px; border-radius:16px; background:var(--card); border:1px solid var(--line);
+    box-shadow:var(--shadow); transition: background .3s ease, border-color .3s ease;
+  }
+  .milestone-head{display:flex; align-items:center; gap:7px; font-size:11.5px; font-weight:700; text-transform:uppercase; letter-spacing:0.8px; color:var(--moss);}
+  .milestone-target{font-family:'Space Grotesk'; font-size:26px; font-weight:700; margin-top:6px; line-height:1;}
+  .milestone-remaining{font-size:13.5px; font-weight:600; color:var(--pine-dark); margin-top:4px;}
+  .milestone-progress-track{height:6px; border-radius:99px; background:var(--paper-alt); margin-top:12px; overflow:hidden;}
+  .milestone-progress-fill{height:100%; background:var(--gold); border-radius:99px; transition:width .5s ease;}
+  /* Hook for a future celebration animation: toggle .celebrate on the goal-reached
+     transition (not on every render) to trigger a one-time confetti/pulse effect. */
+  .milestone-card.reached{background:var(--pine-tint); border-color:var(--pine);}
+  .milestone-card.reached .milestone-remaining{color:var(--pine-dark);}
+
   /* ---------- log entries ---------- */
   .log-entry{
     display:flex; flex-direction:column; gap:10px;
     padding:14px; border:1px solid var(--line); border-radius:13px; background:var(--card);
+    transition: background .2s ease, border-color .2s ease;
   }
   .log-entry + .log-entry{margin-top:8px;}
+  .log-entry.is-today{background:var(--pine-tint); border-color:var(--pine);}
   .log-entry-head{display:flex; justify-content:space-between; align-items:center;}
-  .log-date{font-size:12.5px; font-weight:600; color:var(--ink); letter-spacing:0.2px;}
+  .log-date{font-size:12.5px; font-weight:600; color:var(--ink); letter-spacing:0.2px; display:flex; align-items:center; gap:7px;}
+  .today-pill{
+    font-size:9.5px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px;
+    color:var(--pine-dark); background:#fff; border:1px solid var(--pine); padding:2px 6px; border-radius:99px;
+  }
   .log-stats{display:flex; gap:22px;}
   .log-stat-label{font-size:10.5px; color:var(--moss); text-transform:uppercase; letter-spacing:0.5px; margin-top:2px;}
   .log-weight{font-family:'IBM Plex Mono'; font-weight:600; font-size:17px;}
@@ -1207,7 +1278,6 @@ function renderDashboard(){
   const dir = phaseDirection(phases);
   const cw = currentWeight();
   const avgW = rollingAverageWeight();
-  const avgCount = Math.min(state.weightLogs.length, ROLLING_WINDOW);
   const goalDone = isGoalReached();
   const active = getActivePhase(phases, avgW);
   const totalToLose = Math.abs(p.goalWeight - p.startWeight) || 1;
@@ -1230,121 +1300,144 @@ function renderDashboard(){
   const todaysNutritionLog = state.nutritionLogs.find(n=>n.date===todayStr());
   const todaysLogged = !!(todaysWeightLog || todaysNutritionLog);
 
+  const activeIdx = phases.findIndex(ph=>ph.id===active.id);
+  const prevTarget = activeIdx>0 ? phases[activeIdx-1].weightTarget : p.startWeight;
+  const segmentTotal = Math.abs(active.weightTarget - prevTarget) || 1;
+  const segmentProgressed = Math.max(0, Math.abs(avgW - prevTarget));
+  const milestonePct = goalDone ? 100 : Math.max(0, Math.min(100, (segmentProgressed/segmentTotal)*100));
+
   const el = document.getElementById('view-dashboard');
   el.innerHTML = `
-    <div class="hero-card">
-      <div class="hero-top">
-        <div>
-          <div class="hero-label">Current weight</div>
-          <div class="hero-weight mono">${fmt(cw)}<span style="font-size:16px; opacity:.7;"> lbs</span></div>
-          <div class="hero-goal">Goal: ${fmt(p.goalWeight,0)} lbs</div>
+    <div class="dash-top">
+      <div class="hero-card">
+        <div class="hero-top">
+          <div>
+            <div class="hero-label">Current weight</div>
+            <div class="hero-weight mono">${fmt(cw)}<span style="font-size:16px; opacity:.7;"> lbs</span></div>
+            <div class="hero-goal">Goal: ${fmt(p.goalWeight,0)} lbs</div>
+          </div>
+          <div style="text-align:right;">
+            <div class="hero-label">Today's target</div>
+            <div class="hero-weight mono hero-target-value" style="font-size:34px; color:${goalDone?'#fff':'var(--gold)'};">${goalDone? '—' : fmt(active.eating,0)}</div>
+            <div class="hero-goal">${goalDone? 'Goal reached' : 'calories'}</div>
+            ${!goalDone? `<div class="hero-goal">${fmt(eatenToday,0)} eaten · ${remainingCals>=0? fmt(remainingCals,0)+' left' : fmt(Math.abs(remainingCals),0)+' over'}</div>` : ''}
+          </div>
         </div>
-        <div style="text-align:right;">
-          <div class="hero-label">Today's target</div>
-          <div class="hero-weight mono" style="font-size:26px;">${goalDone? '—' : fmt(active.eating,0)}</div>
-          <div class="hero-goal">${goalDone? 'Goal reached' : 'calories'}</div>
-          ${!goalDone? `<div class="hero-goal">${fmt(eatenToday,0)} eaten · ${remainingCals>=0? fmt(remainingCals,0)+' left' : fmt(Math.abs(remainingCals),0)+' over'}</div>` : ''}
-        </div>
-      </div>
-      <div class="hero-progress-track"><div class="hero-progress-fill" style="width:${progressPct}%;"></div></div>
-      <div class="hero-stats">
-        <span>${fmt(progressPct,1)}% of the way there</span>
-        <span>${fmt(remaining,1)} lbs to go</span>
-      </div>
-    </div>
-
-    ${!goalDone && distance <= 1 ? `<div class="banner" style="margin-top:14px;">🏁 <div>Your ${avgCount}-log average is just <strong>${fmt(distance,1)} lb</strong> from unlocking your next calorie step at ${fmt(active.weightTarget,0)} lbs.</div></div>` : ''}
-    ${goalDone ? `<div class="banner" style="margin-top:14px;">🎉 <div>Your ${avgCount}-log average has reached your goal weight of ${fmt(p.goalWeight,0)} lbs. You can set a new goal any time from Setup.</div></div>` : ''}
-    ${!goalDone && tooLow ? `<div class="banner" style="margin-top:14px; background:#F7E0DA; border-color:#E7B7A8; color:#7A3320;">⚠️ <div>This calorie target may be too aggressive.</div></div>` : ''}
-
-    ${renderWeeklyInsight()}
-
-    <div class="stat-grid">
-      <div class="stat-box">
-        <div class="k">${totalChangeLabel}</div>
-        <div class="v">${fmt(Math.abs(totalChange))} lbs</div>
-        <div class="sub">Avg: ${fmt(avgW)} lbs</div>
-      </div>
-      <div class="stat-box">
-        <div class="k">Current phase</div>
-        <div class="v" style="font-size:16px;">${fmt(active.weightTarget,0)} lb phase</div>
-        <div class="sub">Phase ${active.id} of ${phases.length}</div>
-      </div>
-      <div class="stat-box">
-        <div class="k">Current phase calories</div>
-        <div class="v">${active.eating} cal</div>
-      </div>
-      ${hasBodyStats(p) && p.tdee ? `
-      <div class="stat-box">
-        <div class="k">Estimated maintenance</div>
-        <div class="v">${active.maintenance} cal</div>
-      </div>
-      ` : ''}
-    </div>
-
-    ${hasBodyStats(p) && p.tdee ? `
-    <div class="card" style="margin-top:12px;">
-      <div class="row2">
-        <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Current strategy</div><div class="mono" style="font-weight:600; margin-top:4px;">${deficitLabel}</div></div>
-        <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Calculated multiplier</div><div class="mono" style="font-weight:600; margin-top:4px;">${fmt(p.recommendedMultiplier)}x</div></div>
-      </div>
-      <div class="helper" style="margin-top:10px;">Starting calories were ${calcStartingCalories(p)} cal/day at ${fmt(p.startWeight,0)} lbs.${calibration? ` Calorie targets are calibrated ${calibration.calibrationFactor>=1?'up':'down'} ${fmt(Math.abs((calibration.calibrationFactor-1)*100),1)}% based on your logged results.` : ''}</div>
-      <button class="btn btn-ghost" style="margin-top:12px;" onclick="openCalcDetails()">View calculation details</button>
-    </div>
-    ` : `
-    <div class="card" style="margin-top:12px;">
-      <div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Current strategy</div>
-      <div class="mono" style="font-weight:600; margin-top:4px;">${deficitLabel}</div>
-      <div class="helper" style="margin-top:10px;">Add your height, age, sex, and activity level in Setup to see a personalized BMR/TDEE breakdown.</div>
-      <button class="btn btn-ghost" style="margin-top:12px;" onclick="openCalcDetails()">View calculation details</button>
-    </div>
-    `}
-
-    ${renderEstimatedTimeline()}
-
-    <div class="section-title">Quick log <span style="font-weight:400; color:var(--moss); font-size:12px;">tap to add today's numbers</span></div>
-    <div class="card" style="display:flex; align-items:center; justify-content:space-around; text-align:center; padding:14px; margin-bottom:10px;">
-      <div><div class="mono" style="font-size:20px; font-weight:600;">🔥 ${streak}</div><div style="font-size:12px; color:var(--moss); margin-top:2px;">day streak</div></div>
-      <div style="width:1px; align-self:stretch; background:var(--line);"></div>
-      <div><div class="mono" style="font-size:20px; font-weight:600;">${consistency7}/7</div><div style="font-size:12px; color:var(--moss); margin-top:2px;">days logged this week</div></div>
-    </div>
-    <div class="card" style="margin-bottom:10px;">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-        <div style="font-size:12.5px; font-weight:600; color:var(--ink);">Today, ${prettyDate(todayStr())}</div>
-        ${todaysLogged ? `<span style="font-size:11px; color:var(--moss);">Already logged</span>` : ''}
-      </div>
-      <div class="row2">
-        <div class="field" style="margin-bottom:0;">
-          <label>Weight (lbs)</label>
-          <input type="number" id="quick-weight-input" placeholder="optional" inputmode="decimal" value="${todaysWeightLog ? todaysWeightLog.weight : ''}" ${todaysLogged?'readonly':''}>
-        </div>
-        <div class="field" style="margin-bottom:0;">
-          <label>Calories</label>
-          <input type="number" id="quick-cal-input" placeholder="optional" inputmode="decimal" value="${todaysNutritionLog ? nutritionTotalCalories(todaysNutritionLog) : ''}" ${todaysLogged?'readonly':''}>
+        <div class="hero-progress-track"><div class="hero-progress-fill" style="width:${progressPct}%;"></div></div>
+        <div class="hero-stats">
+          <span>${fmt(progressPct,1)}% of the way there</span>
+          <span>${fmt(remaining,1)} lbs to go</span>
         </div>
       </div>
-      <button class="btn btn-primary" id="quick-entry-save" style="width:100%; margin-top:12px;">${todaysLogged ? "Edit today's entry" : "Log today's entry"}</button>
+
+      <div class="milestone-card ${goalDone?'reached':''}">
+        <div class="milestone-head"><span>${goalDone?'🎉':'🎯'}</span><span>${goalDone?'Goal Reached':'Next Milestone'}</span></div>
+        <div class="milestone-target mono">${fmt(active.weightTarget,0)} lbs</div>
+        <div class="milestone-remaining">${goalDone ? `You reached your goal of ${fmt(p.goalWeight,0)} lbs — set a new one any time from Setup.` : distance<0.15 ? `Only ${fmt(distance,2)} lb away` : `${fmt(distance,1)} lbs remaining`}</div>
+        ${!goalDone ? `<div class="milestone-progress-track"><div class="milestone-progress-fill" style="width:${milestonePct}%;"></div></div>` : ''}
+      </div>
+
+      ${!goalDone && tooLow ? `<div class="banner" style="background:#F7E0DA; border-color:#E7B7A8; color:#7A3320;">⚠️ <div>This calorie target may be too aggressive.</div></div>` : ''}
+
+      <div class="stat-grid">
+        <div class="stat-box">
+          <div class="k">${totalChangeLabel}</div>
+          <div class="v">${fmt(Math.abs(totalChange))} lbs</div>
+          <div class="sub">Avg: ${fmt(avgW)} lbs</div>
+        </div>
+        <div class="stat-box">
+          <div class="k">Current phase</div>
+          <div class="v" style="font-size:16px;">${fmt(active.weightTarget,0)} lb phase</div>
+          <div class="sub">Phase ${active.id} of ${phases.length}</div>
+        </div>
+        <div class="stat-box">
+          <div class="k">Current phase calories</div>
+          <div class="v">${active.eating} cal</div>
+        </div>
+        ${hasBodyStats(p) && p.tdee ? `
+        <div class="stat-box">
+          <div class="k">Estimated maintenance</div>
+          <div class="v">${active.maintenance} cal</div>
+        </div>
+        ` : ''}
+      </div>
+
+      <div>
+        <div class="section-title" style="margin-bottom:8px;">Quick log <span style="font-weight:400; color:var(--moss); font-size:12px;">tap to add today's numbers</span></div>
+        <div class="card" style="display:flex; align-items:center; justify-content:space-around; text-align:center; padding:14px;">
+          <div><div class="mono" style="font-size:20px; font-weight:600;">🔥 ${streak}</div><div style="font-size:12px; color:var(--moss); margin-top:2px;">day streak</div></div>
+          <div style="width:1px; align-self:stretch; background:var(--line);"></div>
+          <div><div class="mono" style="font-size:20px; font-weight:600;">${consistency7}/7</div><div style="font-size:12px; color:var(--moss); margin-top:2px;">days logged this week</div></div>
+        </div>
+        <div class="card" style="margin-top:10px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <div style="font-size:12.5px; font-weight:600; color:var(--ink);">Today, ${prettyDate(todayStr())}</div>
+            ${todaysLogged ? `<span style="font-size:11px; color:var(--moss);">Already logged</span>` : ''}
+          </div>
+          <div class="row2">
+            <div class="field" style="margin-bottom:0;">
+              <label>Weight (lbs)</label>
+              <input type="number" id="quick-weight-input" placeholder="optional" inputmode="decimal" value="${todaysWeightLog ? todaysWeightLog.weight : ''}" ${todaysLogged?'readonly':''}>
+            </div>
+            <div class="field" style="margin-bottom:0;">
+              <label>Calories</label>
+              <input type="number" id="quick-cal-input" placeholder="optional" inputmode="decimal" value="${todaysNutritionLog ? nutritionTotalCalories(todaysNutritionLog) : ''}" ${todaysLogged?'readonly':''}>
+            </div>
+          </div>
+          <button class="btn btn-primary" id="quick-entry-save" style="width:100%; margin-top:12px;">${todaysLogged ? "Edit today's entry" : "Log today's entry"}</button>
+        </div>
+        <button class="btn btn-ghost" style="margin-top:10px;" onclick="openLogEntryForm=true; goTab('log')">+ Log full activity (itemized meals, protein, notes)</button>
+      </div>
     </div>
-    <button class="btn btn-ghost" onclick="openLogEntryForm=true; goTab('log')">+ Log full activity (itemized meals, protein, notes)</button>
 
-    <div class="section-title">Your trail</div>
-    <div class="card trail-wrap">${renderTrailSVG(phases, avgW)}</div>
+    <details class="disclosure" id="dash-insights">
+      <summary>
+        <span>Insights <span class="disclosure-sub">trends, charts &amp; strategy</span></span>
+        <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+      </summary>
+      <div class="disclosure-content">
+        ${renderWeeklyInsight()}
 
-    <div class="section-title">Weight trend</div>
-    <div class="card">${renderTrendChart()}</div>
+        <details class="advanced-details" style="margin-top:8px;">
+          <summary>Current strategy <span style="font-weight:400; color:var(--moss);">— ${deficitLabel}</span></summary>
+          <div style="margin-top:12px;">
+            ${hasBodyStats(p) && p.tdee ? `
+              <div class="row2">
+                <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Current strategy</div><div class="mono" style="font-weight:600; margin-top:4px;">${deficitLabel}</div></div>
+                <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Calculated multiplier</div><div class="mono" style="font-weight:600; margin-top:4px;">${fmt(p.recommendedMultiplier)}x</div></div>
+              </div>
+              <div class="helper" style="margin-top:10px;">Starting calories were ${calcStartingCalories(p)} cal/day at ${fmt(p.startWeight,0)} lbs.${calibration? ` Calorie targets are calibrated ${calibration.calibrationFactor>=1?'up':'down'} ${fmt(Math.abs((calibration.calibrationFactor-1)*100),1)}% based on your logged results.` : ''}</div>
+            ` : `
+              <div class="helper">Add your height, age, sex, and activity level in Setup to see a personalized BMR/TDEE breakdown.</div>
+            `}
+            <button class="btn-link" style="margin-top:10px; display:block;" onclick="openCalcDetails()">View calculation details →</button>
+          </div>
+        </details>
 
-    <div class="section-title">Rolling weight average <span style="font-weight:400; color:var(--moss); font-size:12px;">7-day &amp; 14-day</span></div>
-    <div class="card">${renderRollingWeightChart()}</div>
-    ${renderRollingWeightInsight()}
+        ${renderEstimatedTimeline()}
 
-    <div class="section-title">Calorie breakdown</div>
-    ${renderCalorieBreakdownCard()}
+        <div class="section-title">Journey</div>
+        <div class="card trail-wrap">${renderTrailSVG(phases, avgW)}</div>
+        <div class="helper" style="margin-top:8px;">Each dot marks a calorie-target phase from ${fmt(p.startWeight,0)} to ${fmt(p.goalWeight,0)} lbs — filled pine dots are reached, gold is your current step.</div>
 
-    <div class="section-title">Calorie intake trend <span style="font-weight:400; color:var(--moss); font-size:12px;">7-day &amp; 14-day rolling avg</span></div>
-    <div class="card">${renderRollingCalorieChart()}</div>
+        <div class="section-title">Rolling weight average <span style="font-weight:400; color:var(--moss); font-size:12px;">the trend that matters most</span></div>
+        <div class="card">${renderRollingWeightChart()}</div>
+        ${renderRollingWeightInsight()}
+
+        <div class="section-title">Weight trend <span style="font-weight:400; color:var(--moss); font-size:12px;">daily readings</span></div>
+        <div class="card">${renderTrendChart()}</div>
+
+        <div class="section-title">Calorie breakdown</div>
+        ${renderCalorieBreakdownCard()}
+
+        <div class="section-title">Calorie intake trend <span style="font-weight:400; color:var(--moss); font-size:12px;">7-day &amp; 14-day rolling avg</span></div>
+        <div class="card">${renderRollingCalorieChart()}</div>
+      </div>
+    </details>
   `;
 
   bindCalorieBreakdownControls();
+  bindDisclosureAnimations(el);
 
   const quickWeightInput = document.getElementById('quick-weight-input');
   const quickCalInput = document.getElementById('quick-cal-input');
@@ -1733,11 +1826,13 @@ function renderTrendChart(){
   }
   const arrowGlyph = arrow==='down' ? '&#8595;' : arrow==='up' ? '&#8593;' : '&#8594;';
 
+  // Daily readings are shown as light, secondary context — the dashed trend line
+  // (and the Rolling weight average chart above) are the more meaningful signal.
   const dots = logs.map((l,i)=>{
     const x = mapX(i), y = mapY(l.weight);
     const tipLabel = `${prettyDate(l.date)} — ${fmt(l.weight)} lbs`;
     return `<circle cx="${x}" cy="${y}" r="10" fill="transparent" style="cursor:pointer;" onmousemove="showTrailTip(event,'${tipLabel}','trend-tip')" onmouseleave="hideTrailTip('trend-tip')"></circle>
-      <circle cx="${x}" cy="${y}" r="3.5" fill="var(--card)" stroke="var(--ink-soft)" stroke-width="1.4" style="pointer-events:none;"/>`;
+      <circle cx="${x}" cy="${y}" r="2.75" fill="var(--card)" stroke="var(--moss)" stroke-width="1.2" style="pointer-events:none;"/>`;
   }).join('');
 
   return `
@@ -1747,13 +1842,13 @@ function renderTrendChart(){
     </div>
     <div class="trail-wrap trail-tip-wrap" style="position:relative;">
       <svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg">
-        <line x1="${trendX1}" y1="${trendY1}" x2="${trendX2}" y2="${trendY2}" stroke="${color}" stroke-width="2.5" stroke-dasharray="5 5" stroke-linecap="round"/>
-        <path d="${lineD}" fill="none" stroke="var(--ink-soft)" stroke-width="2"/>
+        <path d="${lineD}" fill="none" stroke="var(--line)" stroke-width="1.5"/>
+        <line x1="${trendX1}" y1="${trendY1}" x2="${trendX2}" y2="${trendY2}" stroke="${color}" stroke-width="3" stroke-dasharray="5 5" stroke-linecap="round"/>
         ${dots}
       </svg>
       <div id="trend-tip" class="mono" style="display:none; position:absolute; pointer-events:none; background:var(--pine-dark); color:#fff; font-size:11.5px; padding:5px 9px; border-radius:8px; white-space:nowrap; transform:translate(-50%,-115%); z-index:5;"></div>
     </div>
-    <div class="trend-sub">Based on your last ${n} weigh-ins, from ${prettyDate(logs[0].date)} to ${prettyDate(logs[n-1].date)}.</div>
+    <div class="trend-sub">Based on your last ${n} weigh-ins, from ${prettyDate(logs[0].date)} to ${prettyDate(logs[n-1].date)}. Daily readings are shown light — see Rolling weight average above for the smoother trend.</div>
   `;
 }
 
@@ -1937,7 +2032,8 @@ function renderRoadmap(){
         const isActive = ph.id===active.id && !isGoalReached();
         const badge = isActive? '<span class="badge badge-current">Current</span>' : reached? '<span class="badge badge-reached">Reached</span>' : '<span class="badge badge-upcoming">Upcoming</span>';
         const dotColor = isActive? 'var(--gold)' : reached? 'var(--pine)' : 'var(--line)';
-        return `<div class="phase-row">
+        const rowClass = isActive? 'phase-row phase-current' : reached? 'phase-row phase-completed' : 'phase-row phase-upcoming';
+        return `<div class="${rowClass}">
           <div class="phase-left">
             <div class="phase-dot" style="background:${dotColor};"></div>
             <div>
@@ -1994,8 +2090,11 @@ function renderLog(){
         </div>
         <div class="field" style="margin-bottom:0;">
           <label>Calories</label>
+          <div class="chip-group meal-quick-add" id="act-quick-add">
+            ${MEAL_CATEGORIES.map(c=>`<div class="chip" data-cat="${c}">+ ${c}</div>`).join('')}
+          </div>
           <div id="act-meals"></div>
-          <button type="button" class="btn btn-ghost" id="act-add-meal" style="margin-top:8px;">+ Add</button>
+          <button type="button" class="btn btn-ghost" id="act-add-meal" style="margin-top:8px;">+ Add another</button>
         </div>
         <details class="advanced-details">
           <summary>Protein, carbs, fat &amp; water <span style="font-weight:400; color:var(--moss);">(optional)</span></summary>
@@ -2039,6 +2138,9 @@ function renderLog(){
     renderMealRows('act-meals', activityDraftMeals, 'new');
     bindMealHandlers('new');
   };
+  document.querySelectorAll('#act-quick-add .chip').forEach(chip=>{
+    chip.onclick = ()=> quickAddMeal('new', chip.dataset.cat);
+  });
 
   document.getElementById('btn-act-save').onclick = async ()=>{
     const date = document.getElementById('act-date').value || todayStr();
@@ -2104,9 +2206,29 @@ function renderLog(){
       renderMealRows('eact-meals', editActivityDraftMeals, 'edit');
       bindMealHandlers('edit');
     };
+    document.querySelectorAll('#eact-quick-add .chip').forEach(chip=>{
+      chip.onclick = ()=> quickAddMeal('edit', chip.dataset.cat);
+    });
     document.getElementById('eact-save').onclick = ()=> saveEditActivity(editingActivityDate);
     document.getElementById('eact-cancel').onclick = ()=> { editingActivityDate = null; renderLog(); };
   }
+
+  bindDisclosureAnimations(el);
+}
+
+// Adds a new calorie line-item pre-filled with the tapped category, so common
+// entries (Breakfast/Lunch/Dinner) don't require opening the category dropdown.
+// Reuses the form's still-blank default row instead of stacking an empty one.
+function quickAddMeal(mode, label){
+  const arr = mode==='new' ? activityDraftMeals : editActivityDraftMeals;
+  const isBlankDefault = arr.length===1 && !arr[0].calories;
+  const row = { id: isBlankDefault ? arr[0].id : cryptoId(), label, calories:'' };
+  if(isBlankDefault){ arr[0] = row; } else { arr.push(row); }
+  const containerId = mode==='new' ? 'act-meals' : 'eact-meals';
+  renderMealRows(containerId, arr, mode);
+  bindMealHandlers(mode);
+  const input = document.querySelector(`#${containerId} input.meal-cal[data-meal-id="${row.id}"]`);
+  if(input) input.focus();
 }
 
 // Renders the calorie line-items (meals) for either the new-entry form or the
@@ -2169,10 +2291,11 @@ function renderActivityRow(date){
   const totalCals = n ? nutritionTotalCalories(n) : 0;
   const mealCount = n && n.meals ? n.meals.length : 0;
   const macroBits = n && (n.protein||n.carbs||n.fat||n.water) ? `${n.protein?`${n.protein}g protein`:''}${n.carbs? ` · ${n.carbs}g carbs`:''}${n.fat? ` · ${n.fat}g fat`:''}${n.water? ` · ${n.water}oz water`:''}` : '';
+  const isToday = date===todayStr();
   return `
-    <div class="log-entry">
+    <div class="log-entry${isToday?' is-today':''}">
       <div class="log-entry-head">
-        <div class="log-date">${prettyDate(date)}</div>
+        <div class="log-date">${prettyDate(date)}${isToday? '<span class="today-pill">Today</span>' : ''}</div>
         <div class="log-actions">
           <button class="del-btn" onclick="startEditActivity('${date}')" aria-label="Edit entry">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
@@ -2207,8 +2330,11 @@ function renderActivityEditRow(date){
       </div>
       <div class="field" style="margin-bottom:0; margin-top:12px;">
         <label>Calories</label>
+        <div class="chip-group meal-quick-add" id="eact-quick-add">
+          ${MEAL_CATEGORIES.map(c=>`<div class="chip" data-cat="${c}">+ ${c}</div>`).join('')}
+        </div>
         <div id="eact-meals"></div>
-        <button type="button" class="btn btn-ghost" id="eact-add-meal" style="margin-top:8px;">+ Add</button>
+        <button type="button" class="btn btn-ghost" id="eact-add-meal" style="margin-top:8px;">+ Add another</button>
       </div>
       <details class="advanced-details" style="margin-top:12px;"${n && (n.protein||n.carbs||n.fat||n.water) ? ' open' : ''}>
         <summary>Protein, carbs, fat &amp; water <span style="font-weight:400; color:var(--moss);">(optional)</span></summary>
@@ -2381,7 +2507,9 @@ function renderSettings(){
 
       <div class="card">
         <div style="display:flex; justify-content:space-between; align-items:center; cursor:pointer;" id="s-advanced-toggle">
-          <label style="margin-bottom:0;">Advanced settings</label>
+          <label style="margin-bottom:0; display:flex; align-items:center; gap:6px;">Advanced
+            <svg id="s-advanced-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--moss); transition:transform .2s ease;"><path d="M6 9l6 6 6-6"/></svg>
+          </label>
           <span class="helper" id="s-advanced-label" style="margin-top:0;">Customize strategy</span>
         </div>
         <div id="s-advanced-body" class="hidden" style="margin-top:14px;">
@@ -2474,8 +2602,11 @@ function renderSettings(){
 
   document.getElementById('s-advanced-toggle').onclick = ()=>{
     const body = document.getElementById('s-advanced-body');
+    const chevron = document.getElementById('s-advanced-chevron');
     const expanded = !body.classList.contains('hidden');
     body.classList.toggle('hidden', expanded);
+    chevron.style.transform = expanded ? '' : 'rotate(180deg)';
+    if(!expanded){ body.classList.remove('fade-in'); void body.offsetWidth; body.classList.add('fade-in'); }
     document.getElementById('s-advanced-label').textContent = expanded ? 'Customize strategy' : 'Automatic calculation';
   };
 
@@ -2526,6 +2657,22 @@ function renderSettings(){
     await saveState();
     boot();
   };
+}
+
+// A same-DOM-node <details> is rebuilt fresh on every render call, so this just
+// needs binding once per render — no dedup/cleanup required. Fades in whichever
+// element follows <summary> when a disclosure is opened, for a smoother reveal.
+function bindDisclosureAnimations(root){
+  (root||document).querySelectorAll('details').forEach(d=>{
+    d.addEventListener('toggle', ()=>{
+      if(!d.open) return;
+      const content = d.lastElementChild;
+      if(!content || content.tagName==='SUMMARY') return;
+      content.classList.remove('fade-in');
+      void content.offsetWidth;
+      content.classList.add('fade-in');
+    });
+  });
 }
 
 // ---------------- nav ----------------
