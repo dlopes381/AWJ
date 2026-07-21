@@ -2450,15 +2450,27 @@ function renderFoodResultsList(){
   if(foodSearchStatus === 'idle'){
     const list = foodIdleTab==='frequent' ? FoodService.getFrequentFoods(10) : FoodService.getRecentFoods().slice(0,10);
     el.innerHTML = `
-      <div class="chip-group" id="food-idle-tabs" style="margin-bottom:12px;">
-        <div class="chip${foodIdleTab==='recent'?' active':''}" data-tab="recent">Recent</div>
-        <div class="chip${foodIdleTab==='frequent'?' active':''}" data-tab="frequent">Frequent</div>
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; gap:8px;">
+        <div class="chip-group" id="food-idle-tabs">
+          <div class="chip${foodIdleTab==='recent'?' active':''}" data-tab="recent">Recent</div>
+          <div class="chip${foodIdleTab==='frequent'?' active':''}" data-tab="frequent">Frequent</div>
+        </div>
+        ${list.length ? `<button type="button" class="btn-link" id="food-clear-all-btn" style="color:var(--danger); flex-shrink:0;">Clear all</button>` : ''}
       </div>
-      ${list.length ? `<div class="stack">${list.map(foodResultCardMarkup).join('')}</div>` : `<div class="empty-state">Search for a food to get started.</div>`}
+      ${list.length ? `<div class="stack">${list.map(f=>foodResultCardMarkup(f, {deleteAction:'history'})).join('')}</div>` : `<div class="empty-state">Search for a food to get started.</div>`}
     `;
     document.querySelectorAll('#food-idle-tabs .chip').forEach(chip=>{
       chip.onclick = ()=>{ foodIdleTab = chip.dataset.tab; renderFoodResultsList(); };
     });
+    const clearBtn = document.getElementById('food-clear-all-btn');
+    if(clearBtn){
+      clearBtn.onclick = ()=>{
+        if(confirm("Clear your entire recent/frequent food history? This can't be undone.")){
+          FoodService.clearRecentFoods();
+          renderFoodResultsList();
+        }
+      };
+    }
     bindFoodResultClicks();
     return;
   }
@@ -2466,7 +2478,7 @@ function renderFoodResultsList(){
   const customMatches = FoodService.searchCustomFoods(foodSearchQuery);
   const customSection = customMatches.length ? `
     <div class="section-title" style="font-size:12px; margin:0 0 10px;">Your foods</div>
-    <div class="stack" style="margin-bottom:16px;">${customMatches.map(foodResultCardMarkup).join('')}</div>
+    <div class="stack" style="margin-bottom:16px;">${customMatches.map(f=>foodResultCardMarkup(f, {deleteAction:'custom'})).join('')}</div>
   ` : '';
 
   if(foodSearchStatus === 'error'){
@@ -2478,12 +2490,13 @@ function renderFoodResultsList(){
     el.innerHTML = `<div class="empty-state">No foods found for "${escapeHtml(foodSearchQuery)}".</div>`;
     return;
   }
-  const apiSection = foodSearchStatus === 'ok' ? `<div class="stack">${foodSearchResults.map(foodResultCardMarkup).join('')}</div>` : '';
+  const apiSection = foodSearchStatus === 'ok' ? `<div class="stack">${foodSearchResults.map(f=>foodResultCardMarkup(f)).join('')}</div>` : '';
   el.innerHTML = customSection + apiSection;
   bindFoodResultClicks();
 }
 
-function foodResultCardMarkup(f){
+function foodResultCardMarkup(f, opts){
+  opts = opts || {};
   const cal = Math.round(f.per100.calories);
   return `
     <div class="food-result-card" data-food-id="${f.id}">
@@ -2491,7 +2504,7 @@ function foodResultCardMarkup(f){
       <div style="flex:1; min-width:0;">
         <div style="display:flex; justify-content:space-between; gap:8px;">
           <div style="font-weight:600; font-size:13.5px;">${escapeHtml(f.name)}</div>
-          ${f.custom ? `<button type="button" class="del-btn food-custom-delete" data-food-id="${f.id}" aria-label="Delete custom food">✕</button>` : ''}
+          ${opts.deleteAction ? `<button type="button" class="del-btn food-delete-btn" data-food-id="${f.id}" data-delete-action="${opts.deleteAction}" aria-label="Remove">✕</button>` : ''}
         </div>
         ${f.brand ? `<div style="font-size:12px; color:var(--moss);">${escapeHtml(f.brand)}</div>` : ''}
         <div class="food-macro-row">
@@ -2513,10 +2526,12 @@ function bindFoodResultClicks(){
       if(food) selectFood(food);
     };
   });
-  document.querySelectorAll('.food-custom-delete').forEach(btn=>{
+  document.querySelectorAll('.food-delete-btn').forEach(btn=>{
     btn.onclick = (e)=>{
       e.stopPropagation();
-      FoodService.deleteCustomFood(btn.dataset.foodId);
+      const id = btn.dataset.foodId;
+      if(btn.dataset.deleteAction==='custom') FoodService.deleteCustomFood(id);
+      else FoodService.removeRecentFood(id);
       renderFoodResultsList();
     };
   });

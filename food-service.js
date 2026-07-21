@@ -211,6 +211,14 @@
     writeJSON(RECENT_KEY, list.slice(0, MAX_RECENT));
   }
 
+  function removeRecentFood(id){
+    writeJSON(RECENT_KEY, getRecentFoods().filter(f=>f.id!==id));
+  }
+
+  function clearRecentFoods(){
+    writeJSON(RECENT_KEY, []);
+  }
+
   // User-entered foods that aren't in Open Food Facts. Same shape as a normalized OFF
   // product (id/name/brand/servingSize/servingGrams/per100/imageUrl) plus `custom:true`,
   // so they work everywhere a searched food does (detail view, recent/frequent, meal add).
@@ -240,7 +248,7 @@
 
   window.FoodService = {
     searchFoods, searchByBarcode, calculateNutrition,
-    getRecentFoods, getFrequentFoods, recordUsage,
+    getRecentFoods, getFrequentFoods, recordUsage, removeRecentFood, clearRecentFoods,
     getCustomFoods, searchCustomFoods, saveCustomFood, deleteCustomFood,
     getFdcApiKey, setFdcApiKey,
   };
