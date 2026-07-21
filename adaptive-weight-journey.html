@@ -3075,6 +3075,16 @@ function renderSettings(){
       <div id="s-goal-error" class="helper" style="color:var(--danger); display:none;">Goal weight must be at least 5 lbs from your current weight, in the right direction for your goal type.</div>
     </div>
 
+    <div class="section-title">Food search</div>
+    <div class="card stack">
+      <div class="field" style="margin-bottom:0;">
+        <label>USDA FoodData Central API key <span style="font-weight:400; color:var(--moss);">(optional)</span></label>
+        <input type="text" id="s-fdc-key" placeholder="paste your free API key" value="${escapeHtml(FoodService.getFdcApiKey())}">
+        <div class="helper">Open Food Facts covers packaged groceries well but has little restaurant/fast-food data. Adding a free FDC key (<a href="https://fdc.nal.usda.gov/api-key-signup.html" target="_blank" rel="noopener" style="color:var(--pine);">sign up here</a>) also searches USDA's branded-food database, which includes restaurant items. Stored only in this browser, never exported with your data.</div>
+      </div>
+      <button class="btn btn-ghost" id="btn-save-fdc-key" style="width:auto; padding:10px 16px;">Save key</button>
+    </div>
+
     <div class="section-title">Data</div>
     <div class="row2">
       <button class="btn btn-ghost" id="btn-export">Export data</button>
@@ -3161,6 +3171,11 @@ function renderSettings(){
     await saveState();
     showToast('Roadmap updated.');
     renderAll();
+  };
+
+  document.getElementById('btn-save-fdc-key').onclick = ()=>{
+    FoodService.setFdcApiKey(document.getElementById('s-fdc-key').value);
+    showToast('API key saved.');
   };
 
   document.getElementById('btn-export').onclick = exportData;

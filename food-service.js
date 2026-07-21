@@ -3,11 +3,14 @@
 // (not a module) so it attaches itself to window, matching this app's plain-script style.
 (function(){
   const API_BASE = 'https://world.openfoodfacts.org';
+  const FDC_API_BASE = 'https://api.nal.usda.gov/fdc/v1';
+  const FDC_KEY_STORAGE = 'awj:fdcApiKey';
   const SEARCH_CACHE_KEY = 'awj:foodSearchCache';
+  const FDC_SEARCH_CACHE_KEY = 'awj:fdcSearchCache';
   const DETAIL_CACHE_KEY = 'awj:foodDetailCache';
   const RECENT_KEY = 'awj:foodRecent';
   const CUSTOM_KEY = 'awj:foodCustom';
-  const SEARCH_CACHE_TTL_MS = 10 * 60 * 1000; // OFF data changes rarely; avoids re-hitting the API for repeated queries in one session
+  const SEARCH_CACHE_TTL_MS = 10 * 60 * 1000; // OFF/FDC data changes rarely; avoids re-hitting the API for repeated queries in one session
   const MAX_RECENT = 30;
   const PAGE_SIZE = 20;
 
@@ -51,11 +54,7 @@
 
   const FIELDS = 'code,product_name,generic_name,brands,serving_size,nutriments,image_front_small_url,image_small_url';
 
-  async function searchFoods(query, page){
-    page = page || 1;
-    query = (query || '').trim();
-    if(!query) return { products: [], page, hasMore: false };
-
+  async function searchOFF(query, page){
     const cacheKey = `${query.toLowerCase()}|${page}`;
     const cache = readJSON(SEARCH_CACHE_KEY, {});
     const hit = cache[cacheKey];
@@ -63,14 +62,100 @@
 
     const url = `${API_BASE}/cgi/search.pl?search_terms=${encodeURIComponent(query)}&search_simple=1&action=process&json=1&page_size=${PAGE_SIZE}&page=${page}&fields=${FIELDS}`;
     const res = await fetch(url);
-    if(!res.ok) throw new Error(`Search failed (${res.status})`);
+    if(!res.ok) throw new Error(`OFF search failed (${res.status})`);
     const json = await res.json();
     const products = (json.products || []).filter(p=>p.product_name).map(normalizeProduct);
-    const data = { products, page, hasMore: (page * PAGE_SIZE) < (json.count || 0) };
+    const data = { products, hasMore: (page * PAGE_SIZE) < (json.count || 0) };
 
     cache[cacheKey] = { ts: Date.now(), data };
     writeJSON(SEARCH_CACHE_KEY, cache);
     return data;
+  }
+
+  function getFdcApiKey(){
+    return (localStorage.getItem(FDC_KEY_STORAGE) || '').trim();
+  }
+  function setFdcApiKey(key){
+    if(key) localStorage.setItem(FDC_KEY_STORAGE, key.trim());
+    else localStorage.removeItem(FDC_KEY_STORAGE);
+  }
+
+  const FDC_NUTRIENT_IDS = { calories: 1008, protein: 1003, carbs: 1005, fat: 1004, fiber: 1079, sugar: 2000, sodium: 1093 };
+
+  // Normalizes a USDA FoodData Central "Branded Food" search result. FDC reports
+  // foodNutrients per 100g/100mL (same basis as OFF's per100 fields), so it drops
+  // into the same shape everything else in this service already expects.
+  function normalizeFdcFood(f){
+    const nutrientVal = (id) => (f.foodNutrients || []).find(n=>n.nutrientId===id)?.value ?? 0;
+    const per100 = {
+      calories: nutrientVal(FDC_NUTRIENT_IDS.calories),
+      protein: nutrientVal(FDC_NUTRIENT_IDS.protein),
+      carbs: nutrientVal(FDC_NUTRIENT_IDS.carbs),
+      fat: nutrientVal(FDC_NUTRIENT_IDS.fat),
+      fiber: nutrientVal(FDC_NUTRIENT_IDS.fiber),
+      sugar: nutrientVal(FDC_NUTRIENT_IDS.sugar),
+      sodium: nutrientVal(FDC_NUTRIENT_IDS.sodium),
+    };
+    // FDC's servingSizeUnit is sometimes an abbreviation like "GRM"/"MLT" rather than "g"/"ml"
+    const unitLower = (f.servingSizeUnit||'').toLowerCase();
+    const displayUnit = unitLower.startsWith('g') ? 'g' : unitLower.startsWith('ml') ? 'ml' : '';
+    const servingGrams = displayUnit ? f.servingSize : null;
+    return {
+      id: `fdc:${f.fdcId}`,
+      barcode: f.gtinUpc || '',
+      name: f.description || 'Unknown food',
+      brand: f.brandOwner || f.brandName || '',
+      servingSize: servingGrams ? `${servingGrams}${displayUnit}` : '',
+      servingGrams,
+      per100,
+      imageUrl: '', // FDC doesn't provide product photos
+      source: 'fdc',
+    };
+  }
+
+  async function searchFDC(query){
+    const key = getFdcApiKey();
+    if(!key) return { products: [] }; // no key configured — silently contributes nothing, OFF results still show
+
+    const cacheKey = query.toLowerCase();
+    const cache = readJSON(FDC_SEARCH_CACHE_KEY, {});
+    const hit = cache[cacheKey];
+    if(hit && Date.now() - hit.ts < SEARCH_CACHE_TTL_MS) return hit.data;
+
+    const url = `${FDC_API_BASE}/foods/search?query=${encodeURIComponent(query)}&dataType=Branded&pageSize=20&api_key=${encodeURIComponent(key)}`;
+    const res = await fetch(url);
+    if(!res.ok) throw new Error(`FDC search failed (${res.status})`);
+    const json = await res.json();
+    const products = (json.foods || []).map(normalizeFdcFood);
+    const data = { products };
+
+    cache[cacheKey] = { ts: Date.now(), data };
+    writeJSON(FDC_SEARCH_CACHE_KEY, cache);
+    return data;
+  }
+
+  // Merges both sources: FDC first (better restaurant/branded coverage when a key is
+  // configured), then Open Food Facts (better packaged-goods coverage + photos). Each
+  // source's own failure is isolated — one API being down doesn't blank out the other.
+  async function searchFoods(query, page){
+    page = page || 1;
+    query = (query || '').trim();
+    if(!query) return { products: [], page, hasMore: false };
+
+    const [offResult, fdcResult] = await Promise.allSettled([
+      searchOFF(query, page),
+      page===1 ? searchFDC(query) : Promise.resolve({ products: [] }),
+    ]);
+
+    if(offResult.status==='rejected' && fdcResult.status==='rejected') throw offResult.reason;
+
+    const fdcProducts = fdcResult.status==='fulfilled' ? fdcResult.value.products : [];
+    const offProducts = offResult.status==='fulfilled' ? offResult.value.products : [];
+    return {
+      products: [...fdcProducts, ...offProducts],
+      page,
+      hasMore: offResult.status==='fulfilled' ? offResult.value.hasMore : false,
+    };
   }
 
   async function searchByBarcode(barcode){
@@ -157,5 +242,6 @@
     searchFoods, searchByBarcode, calculateNutrition,
     getRecentFoods, getFrequentFoods, recordUsage,
     getCustomFoods, searchCustomFoods, saveCustomFood, deleteCustomFood,
+    getFdcApiKey, setFdcApiKey,
   };
 })();
