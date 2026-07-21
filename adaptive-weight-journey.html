@@ -140,6 +140,15 @@
   .badge-reached{background:var(--pine-tint); color:var(--pine-dark);}
   .badge-upcoming{background:var(--paper-alt); color:var(--moss);}
 
+  /* ---------- food search ---------- */
+  .food-result-card{display:flex; gap:12px; padding:12px; border:1px solid var(--line); border-radius:12px; background:var(--card); cursor:pointer; transition:border-color .15s ease;}
+  .food-result-card:active{border-color:var(--pine);}
+  .food-thumb{width:52px; height:52px; border-radius:10px; object-fit:cover; background:var(--paper-alt); flex-shrink:0;}
+  .food-thumb-placeholder{width:52px; height:52px; border-radius:10px; background:var(--paper-alt); flex-shrink:0; display:flex; align-items:center; justify-content:center; font-size:20px;}
+  .food-macro-row{display:flex; gap:10px; font-size:11.5px; color:var(--moss); margin-top:4px; flex-wrap:wrap;}
+  .macro-track{height:7px; border-radius:99px; background:var(--paper-alt); overflow:hidden;}
+  .macro-fill{height:100%; background:var(--pine); border-radius:99px; transition:width .4s ease;}
+
   /* ---------- bottom nav ---------- */
   .tabbar{
     position:fixed; bottom:0; left:0; right:0; z-index:30;
@@ -363,6 +372,19 @@
   </div>
 </div>
 
+<div id="food-overlay" class="hidden" style="position:fixed; inset:0; background:var(--paper); z-index:100; overflow-y:auto;">
+  <div style="max-width:480px; margin:0 auto; padding:18px 20px 40px;">
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:14px;">
+      <button class="icon-btn" onclick="closeFoodSearch()" aria-label="Back">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+      </button>
+      <h1 class="page-title" style="margin:0;">Add food</h1>
+    </div>
+    <div id="food-overlay-body"></div>
+  </div>
+</div>
+
+<script src="food-service.js"></script>
 <script>
 const STORAGE_KEY = 'awj:data';
 let state = { profile:null, weightLogs:[], nutritionLogs:[], ackPhaseId:null };
@@ -370,6 +392,20 @@ let activeTab = 'dashboard';
 let editingActivityDate = null;
 let activityDraftMeals = [];
 let editActivityDraftMeals = [];
+let foodSearchMode = null;   // 'new' | 'edit' — which draft meals array/day to add the food to
+let foodMealCategory = 'Other';
+let foodSearchQuery = '';
+let foodSearchResults = [];
+let foodSearchStatus = 'idle'; // idle | loading | ok | empty | error
+let foodSearchToken = 0;    // guards stale debounced responses from overwriting a newer search
+let foodSelected = null;    // normalized food object once a search result is picked
+let foodServingQty = 100;
+let foodServingUnit = 'g';
+let foodIdleTab = 'recent'; // 'recent' | 'frequent' — which list the idle (no-query) view shows
+let foodCreatingCustom = false;
+let foodScanning = false;
+let foodScanStream = null;
+let foodScanRAF = null;
 // Set true right before navigating to the Log tab when the caller wants the
 // new-entry form pre-expanded (e.g. dashboard's "+ Log full activity"); consumed
 // (reset to false) the next time renderLog() runs.
@@ -486,6 +522,16 @@ function calcProteinGoal(p, weightLbs){
   if(goalType==='gain' || goalType==='maintain') perLb = 0.8;
   else perLb = p.deficit >= 750 ? 1.1 : p.deficit >= 500 ? 1.0 : 0.9; // more aggressive cuts need more protein to preserve muscle
   return Math.round(weightLbs * perLb);
+}
+
+// Derives carb/fat goals from the existing protein goal and calorie target rather than
+// adding a separate manual goal-setting form: protein from calcProteinGoal, fat at a flat
+// 25% of calories (a common default split), carbs get whatever calories remain.
+function calcMacroGoals(p, weightLbs, calorieTarget){
+  const protein = calcProteinGoal(p, weightLbs);
+  const fat = Math.round((calorieTarget * 0.25) / 9);
+  const carbs = Math.max(0, Math.round((calorieTarget - protein*4 - fat*9) / 4));
+  return { protein, carbs, fat };
 }
 
 function calorieFloor(p){
@@ -1289,6 +1335,8 @@ function renderDashboard(){
   const todaysNutrition = state.nutritionLogs.find(n=>n.date===todayStr());
   const eatenToday = todaysNutrition ? nutritionTotalCalories(todaysNutrition) : 0;
   const remainingCals = active.eating - eatenToday;
+  const macroGoals = calcMacroGoals(p, avgW, active.eating);
+  const macrosEaten = { protein: todaysNutrition?.protein||0, carbs: todaysNutrition?.carbs||0, fat: todaysNutrition?.fat||0 };
   const tooLow = hasBodyStats(p) && calorieWarning(p, active.eating);
   const currentAdjust = taperedAdjustment(p, active.weightTarget);
   const taperedNote = p.taperDeficit && currentAdjust !== p.deficit ? ' (tapered)' : '';
@@ -1360,6 +1408,22 @@ function renderDashboard(){
           <div class="v">${active.maintenance} cal</div>
         </div>
         ` : ''}
+      </div>
+
+      <div class="card">
+        <div class="section-title" style="margin:0 0 12px;">Macros today</div>
+        ${['protein','carbs','fat'].map(k=>{
+          const eaten = macrosEaten[k], goal = macroGoals[k] || 1;
+          const pct = Math.max(0, Math.min(100, (eaten/goal)*100));
+          const label = k==='protein'?'Protein':k==='carbs'?'Carbs':'Fat';
+          return `
+          <div style="margin-bottom:10px;">
+            <div style="display:flex; justify-content:space-between; font-size:12.5px; margin-bottom:4px;">
+              <span>${label}</span><span class="mono">${fmt(eaten,0)}g / ${goal}g</span>
+            </div>
+            <div class="macro-track"><div class="macro-fill" style="width:${pct}%;"></div></div>
+          </div>`;
+        }).join('')}
       </div>
 
       <div>
@@ -2095,6 +2159,7 @@ function renderLog(){
           </div>
           <div id="act-meals"></div>
           <button type="button" class="btn btn-ghost" id="act-add-meal" style="margin-top:8px;">+ Add another</button>
+          <button type="button" class="btn-link" id="act-food-search-btn" style="display:block; margin-top:8px;">🔎 Search a food database</button>
         </div>
         <details class="advanced-details">
           <summary>Protein, carbs, fat &amp; water <span style="font-weight:400; color:var(--moss);">(optional)</span></summary>
@@ -2141,6 +2206,7 @@ function renderLog(){
   document.querySelectorAll('#act-quick-add .chip').forEach(chip=>{
     chip.onclick = ()=> quickAddMeal('new', chip.dataset.cat);
   });
+  document.getElementById('act-food-search-btn').onclick = ()=> openFoodSearch('new');
 
   document.getElementById('btn-act-save').onclick = async ()=>{
     const date = document.getElementById('act-date').value || todayStr();
@@ -2152,7 +2218,7 @@ function renderLog(){
     const notes = document.getElementById('act-notes').value.trim();
     const meals = activityDraftMeals
       .filter(m=> parseFloat(m.calories)>0)
-      .map(m=>({id:m.id||cryptoId(), label: MEAL_CATEGORIES.includes(m.label)?m.label:'Other', calories: parseFloat(m.calories)||0}));
+      .map(m=>({id:m.id||cryptoId(), label: MEAL_CATEGORIES.includes(m.label)?m.label:'Other', calories: parseFloat(m.calories)||0, ...(m.foodName?{foodName:m.foodName}:{})}));
 
     const hasWeight = weightVal > 0;
     const hasMeals = meals.length > 0;
@@ -2209,6 +2275,7 @@ function renderLog(){
     document.querySelectorAll('#eact-quick-add .chip').forEach(chip=>{
       chip.onclick = ()=> quickAddMeal('edit', chip.dataset.cat);
     });
+    document.getElementById('eact-food-search-btn').onclick = ()=> openFoodSearch('edit');
     document.getElementById('eact-save').onclick = ()=> saveEditActivity(editingActivityDate);
     document.getElementById('eact-cancel').onclick = ()=> { editingActivityDate = null; renderLog(); };
   }
@@ -2239,7 +2306,7 @@ function renderMealRows(containerId, meals, mode){
   const el = document.getElementById(containerId);
   if(!el) return;
   const rows = meals.map(m=>`
-    <div class="row2" style="margin-bottom:8px; align-items:center;">
+    <div class="row2" style="margin-bottom:${m.foodName?'2px':'8px'}; align-items:center;">
       <select class="meal-label" data-meal-id="${m.id}">
         ${MEAL_CATEGORIES.map(c=>`<option value="${c}" ${m.label===c?'selected':''}>${c}</option>`).join('')}
       </select>
@@ -2248,6 +2315,7 @@ function renderMealRows(containerId, meals, mode){
         ${meals.length>1 ? `<button type="button" class="del-btn meal-remove" data-meal-id="${m.id}" aria-label="Remove entry">✕</button>` : ''}
       </div>
     </div>
+    ${m.foodName ? `<div class="helper" style="margin-bottom:8px;">from: ${escapeHtml(m.foodName)}</div>` : ''}
   `).join('');
   el.innerHTML = rows + `<div class="helper" id="${containerId}-total" style="margin-top:2px;">Total: ${mealsTotal(meals)} cal</div>`;
 }
@@ -2283,6 +2351,457 @@ function bindMealHandlers(mode){
       bindMealHandlers(mode);
     };
   });
+}
+
+// ---------------- food search (Open Food Facts) ----------------
+function openFoodSearch(mode){
+  foodSearchMode = mode;
+  foodMealCategory = 'Other';
+  foodSearchQuery = '';
+  foodSearchResults = [];
+  foodSearchStatus = 'idle';
+  foodIdleTab = 'recent';
+  foodSelected = null;
+  foodCreatingCustom = false;
+  foodScanning = false;
+  document.getElementById('food-overlay').classList.remove('hidden');
+  renderFoodOverlay();
+}
+
+function closeFoodSearch(){
+  stopScanStream();
+  document.getElementById('food-overlay').classList.add('hidden');
+}
+
+function renderFoodOverlay(){
+  const el = document.getElementById('food-overlay-body');
+  if(foodCreatingCustom){
+    el.innerHTML = foodCustomFormMarkup();
+    bindCustomFoodFormHandlers();
+  } else if(foodScanning){
+    el.innerHTML = foodScanMarkup();
+    bindBarcodeScanHandlers();
+  } else if(foodSelected){
+    el.innerHTML = foodDetailMarkup();
+    bindFoodDetailHandlers();
+  } else {
+    el.innerHTML = foodSearchMarkup();
+    bindFoodSearchHandlers();
+    renderFoodResultsList();
+  }
+}
+
+function foodSearchMarkup(){
+  return `
+    <div class="field" style="margin-bottom:10px;">
+      <input type="text" id="food-search-input" placeholder="Search foods, e.g. &quot;chicken breast&quot;" value="${escapeHtml(foodSearchQuery)}" autocomplete="off">
+    </div>
+    <div style="display:flex; gap:16px; margin-bottom:14px;">
+      <button type="button" class="btn-link" id="food-scan-open-btn">📷 Scan a barcode</button>
+      <button type="button" class="btn-link" id="food-custom-btn">+ Create a custom food</button>
+    </div>
+    <div id="food-results-list"></div>
+  `;
+}
+
+function bindFoodSearchHandlers(){
+  const input = document.getElementById('food-search-input');
+  input.focus();
+  input.selectionStart = input.selectionEnd = input.value.length;
+  let debounceTimer;
+  input.oninput = ()=>{
+    foodSearchQuery = input.value;
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(()=> runFoodSearch(foodSearchQuery), 350);
+  };
+  document.getElementById('food-scan-open-btn').onclick = openBarcodeScan;
+  document.getElementById('food-custom-btn').onclick = ()=>{ foodCreatingCustom = true; renderFoodOverlay(); };
+}
+
+async function runFoodSearch(query){
+  const token = ++foodSearchToken;
+  if(!query.trim()){
+    foodSearchStatus = 'idle';
+    foodSearchResults = [];
+    renderFoodResultsList();
+    return;
+  }
+  foodSearchStatus = 'loading';
+  renderFoodResultsList();
+  try{
+    const { products } = await FoodService.searchFoods(query);
+    if(token !== foodSearchToken) return; // a newer search superseded this one
+    foodSearchResults = products;
+    foodSearchStatus = products.length ? 'ok' : 'empty';
+  }catch(e){
+    if(token !== foodSearchToken) return;
+    foodSearchStatus = 'error';
+  }
+  renderFoodResultsList();
+}
+
+function renderFoodResultsList(){
+  const el = document.getElementById('food-results-list');
+  if(!el) return;
+  if(foodSearchStatus === 'loading'){
+    el.innerHTML = `<div class="empty-state">Searching…</div>`;
+    return;
+  }
+  if(foodSearchStatus === 'idle'){
+    const list = foodIdleTab==='frequent' ? FoodService.getFrequentFoods(10) : FoodService.getRecentFoods().slice(0,10);
+    el.innerHTML = `
+      <div class="chip-group" id="food-idle-tabs" style="margin-bottom:12px;">
+        <div class="chip${foodIdleTab==='recent'?' active':''}" data-tab="recent">Recent</div>
+        <div class="chip${foodIdleTab==='frequent'?' active':''}" data-tab="frequent">Frequent</div>
+      </div>
+      ${list.length ? `<div class="stack">${list.map(foodResultCardMarkup).join('')}</div>` : `<div class="empty-state">Search for a food to get started.</div>`}
+    `;
+    document.querySelectorAll('#food-idle-tabs .chip').forEach(chip=>{
+      chip.onclick = ()=>{ foodIdleTab = chip.dataset.tab; renderFoodResultsList(); };
+    });
+    bindFoodResultClicks();
+    return;
+  }
+
+  const customMatches = FoodService.searchCustomFoods(foodSearchQuery);
+  const customSection = customMatches.length ? `
+    <div class="section-title" style="font-size:12px; margin:0 0 10px;">Your foods</div>
+    <div class="stack" style="margin-bottom:16px;">${customMatches.map(foodResultCardMarkup).join('')}</div>
+  ` : '';
+
+  if(foodSearchStatus === 'error'){
+    el.innerHTML = customSection + `<div class="empty-state">Couldn't reach Open Food Facts. Check your connection and try again.</div>`;
+    bindFoodResultClicks();
+    return;
+  }
+  if(foodSearchStatus === 'empty' && customMatches.length===0){
+    el.innerHTML = `<div class="empty-state">No foods found for "${escapeHtml(foodSearchQuery)}".</div>`;
+    return;
+  }
+  const apiSection = foodSearchStatus === 'ok' ? `<div class="stack">${foodSearchResults.map(foodResultCardMarkup).join('')}</div>` : '';
+  el.innerHTML = customSection + apiSection;
+  bindFoodResultClicks();
+}
+
+function foodResultCardMarkup(f){
+  const cal = Math.round(f.per100.calories);
+  return `
+    <div class="food-result-card" data-food-id="${f.id}">
+      ${f.imageUrl ? `<img class="food-thumb" src="${f.imageUrl}" alt="">` : `<div class="food-thumb-placeholder">🍽️</div>`}
+      <div style="flex:1; min-width:0;">
+        <div style="display:flex; justify-content:space-between; gap:8px;">
+          <div style="font-weight:600; font-size:13.5px;">${escapeHtml(f.name)}</div>
+          ${f.custom ? `<button type="button" class="del-btn food-custom-delete" data-food-id="${f.id}" aria-label="Delete custom food">✕</button>` : ''}
+        </div>
+        ${f.brand ? `<div style="font-size:12px; color:var(--moss);">${escapeHtml(f.brand)}</div>` : ''}
+        <div class="food-macro-row">
+          <span>${cal} cal</span><span>${fmt(f.per100.protein,1)}g protein</span><span>${fmt(f.per100.carbs,1)}g carbs</span><span>${fmt(f.per100.fat,1)}g fat</span>
+        </div>
+        <div class="helper" style="margin-top:2px;">per 100g${f.servingSize? ` · serving: ${escapeHtml(f.servingSize)}`:''}</div>
+      </div>
+    </div>`;
+}
+
+function bindFoodResultClicks(){
+  document.querySelectorAll('.food-result-card').forEach(card=>{
+    card.onclick = ()=>{
+      const id = card.dataset.foodId;
+      const pool = foodSearchStatus==='idle'
+        ? (foodIdleTab==='frequent' ? FoodService.getFrequentFoods(10) : FoodService.getRecentFoods())
+        : [...FoodService.searchCustomFoods(foodSearchQuery), ...foodSearchResults];
+      const food = pool.find(f=>f.id===id);
+      if(food) selectFood(food);
+    };
+  });
+  document.querySelectorAll('.food-custom-delete').forEach(btn=>{
+    btn.onclick = (e)=>{
+      e.stopPropagation();
+      FoodService.deleteCustomFood(btn.dataset.foodId);
+      renderFoodResultsList();
+    };
+  });
+}
+
+function selectFood(food){
+  foodSelected = food;
+  if(food.servingGrams){ foodServingUnit = 'serving'; foodServingQty = 1; }
+  else { foodServingUnit = 'g'; foodServingQty = 100; }
+  renderFoodOverlay();
+}
+
+function foodDetailMarkup(){
+  const f = foodSelected;
+  const n = FoodService.calculateNutrition(f, foodServingQty, foodServingUnit);
+  return `
+    <div class="card stack">
+      <div style="display:flex; gap:12px; align-items:center;">
+        ${f.imageUrl ? `<img class="food-thumb" src="${f.imageUrl}" alt="">` : `<div class="food-thumb-placeholder">🍽️</div>`}
+        <div>
+          <div style="font-weight:600; font-size:15px;">${escapeHtml(f.name)}</div>
+          ${f.brand ? `<div style="font-size:12.5px; color:var(--moss);">${escapeHtml(f.brand)}</div>` : ''}
+        </div>
+      </div>
+      <div class="row2">
+        <div class="field" style="margin-bottom:0;">
+          <label>Amount</label>
+          <input type="number" id="food-qty-input" value="${foodServingQty}" inputmode="decimal" min="0">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Unit</label>
+          <select id="food-unit-select">
+            <option value="g" ${foodServingUnit==='g'?'selected':''}>grams</option>
+            ${f.servingGrams ? `<option value="serving" ${foodServingUnit==='serving'?'selected':''}>serving (${fmt(f.servingGrams,0)}g)</option>` : ''}
+          </select>
+        </div>
+      </div>
+      <div class="card" style="background:var(--paper-alt); box-shadow:none;">
+        <div class="mono" style="font-size:26px; font-weight:700;" id="food-calc-calories">${n.calories} cal</div>
+        <div class="food-macro-row" id="food-calc-macros" style="font-size:13px; margin-top:6px;">
+          <span>${fmt(n.protein,1)}g protein</span><span>${fmt(n.carbs,1)}g carbs</span><span>${fmt(n.fat,1)}g fat</span><span>${fmt(n.fiber,1)}g fiber</span><span>${fmt(n.sugar,1)}g sugar</span><span>${Math.round(n.sodium)}mg sodium</span>
+        </div>
+      </div>
+      <div class="field" style="margin-bottom:0;">
+        <label>Add to</label>
+        <div class="chip-group" id="food-meal-cat-group">
+          ${MEAL_CATEGORIES.map(c=>`<div class="chip${foodMealCategory===c?' active':''}" data-cat="${c}">${c}</div>`).join('')}
+        </div>
+      </div>
+      <div style="display:flex; gap:10px;">
+        <button type="button" class="btn btn-ghost" id="food-back-btn" style="width:auto; flex:0 0 auto; padding:13px 18px;">← Back</button>
+        <button type="button" class="btn btn-primary" id="food-add-btn">Add to meal</button>
+      </div>
+    </div>
+  `;
+}
+
+function bindFoodDetailHandlers(){
+  const qtyInput = document.getElementById('food-qty-input');
+  const unitSelect = document.getElementById('food-unit-select');
+  const recalc = ()=>{
+    foodServingQty = parseFloat(qtyInput.value) || 0;
+    foodServingUnit = unitSelect.value;
+    const n = FoodService.calculateNutrition(foodSelected, foodServingQty, foodServingUnit);
+    document.getElementById('food-calc-calories').textContent = `${n.calories} cal`;
+    document.getElementById('food-calc-macros').innerHTML = `<span>${fmt(n.protein,1)}g protein</span><span>${fmt(n.carbs,1)}g carbs</span><span>${fmt(n.fat,1)}g fat</span><span>${fmt(n.fiber,1)}g fiber</span><span>${fmt(n.sugar,1)}g sugar</span><span>${Math.round(n.sodium)}mg sodium</span>`;
+  };
+  qtyInput.oninput = recalc;
+  unitSelect.onchange = recalc;
+  document.querySelectorAll('#food-meal-cat-group .chip').forEach(chip=>{
+    chip.onclick = ()=>{
+      foodMealCategory = chip.dataset.cat;
+      document.querySelectorAll('#food-meal-cat-group .chip').forEach(c=>c.classList.toggle('active', c.dataset.cat===foodMealCategory));
+    };
+  });
+  document.getElementById('food-back-btn').onclick = ()=>{ foodSelected = null; renderFoodOverlay(); };
+  document.getElementById('food-add-btn').onclick = addFoodToMeal;
+}
+
+// ---------------- custom foods ----------------
+function foodCustomFormMarkup(){
+  return `
+    <div class="card stack">
+      <div class="section-title" style="margin:0;">Create custom food</div>
+      <div class="field" style="margin-bottom:0;">
+        <label>Name</label>
+        <input type="text" id="cf-name" placeholder="e.g. Mom's chili">
+      </div>
+      <div class="field" style="margin-bottom:0;">
+        <label>Brand <span style="font-weight:400; color:var(--moss);">(optional)</span></label>
+        <input type="text" id="cf-brand" placeholder="optional">
+      </div>
+      <div class="row2">
+        <div class="field" style="margin-bottom:0;">
+          <label>Serving amount</label>
+          <input type="number" id="cf-amount" value="100" inputmode="decimal">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Unit</label>
+          <select id="cf-unit">
+            <option value="g">grams</option>
+            <option value="ml">ml</option>
+          </select>
+        </div>
+      </div>
+      <div class="helper" style="margin-top:-6px;">Enter the nutrition for that serving amount — it'll be scaled automatically when you log it.</div>
+      <div class="row2">
+        <div class="field" style="margin-bottom:0;">
+          <label>Calories</label>
+          <input type="number" id="cf-calories" inputmode="decimal">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Protein (g) <span style="font-weight:400; color:var(--moss);">(optional)</span></label>
+          <input type="number" id="cf-protein" inputmode="decimal" placeholder="optional">
+        </div>
+      </div>
+      <div class="row2">
+        <div class="field" style="margin-bottom:0;">
+          <label>Carbs (g) <span style="font-weight:400; color:var(--moss);">(optional)</span></label>
+          <input type="number" id="cf-carbs" inputmode="decimal" placeholder="optional">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Fat (g) <span style="font-weight:400; color:var(--moss);">(optional)</span></label>
+          <input type="number" id="cf-fat" inputmode="decimal" placeholder="optional">
+        </div>
+      </div>
+      <div style="display:flex; gap:10px;">
+        <button type="button" class="btn btn-ghost" id="cf-back-btn" style="width:auto; flex:0 0 auto; padding:13px 18px;">← Back</button>
+        <button type="button" class="btn btn-primary" id="cf-save-btn">Use this food</button>
+      </div>
+    </div>
+  `;
+}
+
+function bindCustomFoodFormHandlers(){
+  document.getElementById('cf-back-btn').onclick = ()=>{ foodCreatingCustom = false; renderFoodOverlay(); };
+  document.getElementById('cf-save-btn').onclick = ()=>{
+    const name = document.getElementById('cf-name').value.trim();
+    const brand = document.getElementById('cf-brand').value.trim();
+    const amount = parseFloat(document.getElementById('cf-amount').value) || 100;
+    const unit = document.getElementById('cf-unit').value;
+    const calories = parseFloat(document.getElementById('cf-calories').value) || 0;
+    const protein = parseFloat(document.getElementById('cf-protein').value) || 0;
+    const carbs = parseFloat(document.getElementById('cf-carbs').value) || 0;
+    const fat = parseFloat(document.getElementById('cf-fat').value) || 0;
+    if(!name){ showToast('Enter a food name.'); return; }
+    if(calories<=0){ showToast('Enter the calories for that serving.'); return; }
+
+    const factor = 100 / amount;
+    const round = (v,d)=> Math.round(v*Math.pow(10,d))/Math.pow(10,d);
+    const food = {
+      name, brand,
+      servingSize: `${fmt(amount,0)}${unit}`,
+      servingGrams: amount,
+      per100: {
+        calories: Math.round(calories*factor),
+        protein: round(protein*factor,1), carbs: round(carbs*factor,1), fat: round(fat*factor,1),
+        fiber: 0, sugar: 0, sodium: 0,
+      },
+      imageUrl: '',
+    };
+    const saved = FoodService.saveCustomFood(food);
+    foodCreatingCustom = false;
+    selectFood(saved);
+  };
+}
+
+// ---------------- barcode scanning ----------------
+// Uses the native BarcodeDetector API (Chrome/Edge) — no external library needed. Falls
+// back to manual barcode entry (via FoodService.searchByBarcode) everywhere else.
+function openBarcodeScan(){
+  foodScanning = true;
+  renderFoodOverlay();
+}
+
+function closeBarcodeScan(){
+  foodScanning = false;
+  stopScanStream();
+  renderFoodOverlay();
+}
+
+function stopScanStream(){
+  if(foodScanRAF) cancelAnimationFrame(foodScanRAF);
+  foodScanRAF = null;
+  if(foodScanStream){ foodScanStream.getTracks().forEach(t=>t.stop()); foodScanStream = null; }
+}
+
+function foodScanMarkup(){
+  return `
+    <div class="card stack">
+      <div style="border-radius:12px; overflow:hidden; background:#000;">
+        <video id="food-scan-video" autoplay playsinline muted style="width:100%; display:block;"></video>
+      </div>
+      <div class="helper" id="food-scan-status">Point your camera at a barcode.</div>
+      <div class="field" style="margin-bottom:0;">
+        <label>Or enter barcode manually</label>
+        <div style="display:flex; gap:8px;">
+          <input type="text" id="food-scan-manual" placeholder="e.g. 3017620422003" inputmode="numeric" style="flex:1;">
+          <button type="button" class="btn btn-primary" id="food-scan-manual-btn" style="width:auto; padding:11px 16px;">Look up</button>
+        </div>
+      </div>
+      <button type="button" class="btn btn-ghost" id="food-scan-cancel-btn">Cancel</button>
+    </div>
+  `;
+}
+
+async function bindBarcodeScanHandlers(){
+  document.getElementById('food-scan-cancel-btn').onclick = closeBarcodeScan;
+  document.getElementById('food-scan-manual-btn').onclick = ()=> lookupBarcode(document.getElementById('food-scan-manual').value);
+
+  const statusEl = document.getElementById('food-scan-status');
+  if(!('BarcodeDetector' in window)){
+    statusEl.textContent = 'Live camera scanning needs Chrome or Edge on this device — enter the barcode number below instead.';
+    return;
+  }
+  let stream;
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+  }catch(e){
+    statusEl.textContent = "Couldn't access the camera — enter the barcode number below instead.";
+    return;
+  }
+  if(!foodScanning){ stream.getTracks().forEach(t=>t.stop()); return; } // overlay closed while awaiting camera permission
+  foodScanStream = stream;
+  const video = document.getElementById('food-scan-video');
+  if(!video){ stopScanStream(); return; }
+  video.srcObject = stream;
+
+  const detector = new BarcodeDetector({ formats: ['ean_13','ean_8','upc_a','upc_e'] });
+  const scanFrame = async ()=>{
+    if(!foodScanning) return;
+    try{
+      const codes = await detector.detect(video);
+      if(codes.length){ lookupBarcode(codes[0].rawValue); return; }
+    }catch(e){}
+    foodScanRAF = requestAnimationFrame(scanFrame);
+  };
+  video.onloadedmetadata = ()=> scanFrame();
+}
+
+async function lookupBarcode(code){
+  code = (code||'').trim();
+  if(!code) return;
+  stopScanStream();
+  const statusEl = document.getElementById('food-scan-status');
+  if(statusEl) statusEl.textContent = 'Looking up…';
+  try{
+    const food = await FoodService.searchByBarcode(code);
+    if(!food){ if(statusEl) statusEl.textContent = `No product found for barcode ${escapeHtml(code)}. Try a custom food instead.`; return; }
+    foodScanning = false;
+    selectFood(food);
+  }catch(e){
+    if(statusEl) statusEl.textContent = "Couldn't look up that barcode. Check your connection and try again.";
+  }
+}
+
+// Adds the selected/scaled food as a calorie line-item to the active draft (reusing the
+// still-blank default row, same convention as quickAddMeal), and folds its macros into the
+// day's protein/carbs/fat fields — those are manual day-level totals (see data model), so a
+// food-sourced item just adds on top of whatever's already typed in rather than replacing it.
+function addFoodToMeal(){
+  const f = foodSelected;
+  const n = FoodService.calculateNutrition(f, foodServingQty, foodServingUnit);
+  const arr = foodSearchMode==='new' ? activityDraftMeals : editActivityDraftMeals;
+  const label = f.brand ? `${f.name} (${f.brand})` : f.name;
+  const isBlankDefault = arr.length===1 && !arr[0].calories;
+  const row = { id: isBlankDefault ? arr[0].id : cryptoId(), label: foodMealCategory, calories: n.calories, foodName: label };
+  if(isBlankDefault){ arr[0] = row; } else { arr.push(row); }
+  if(foodSearchMode==='new') activityDraftMeals = arr; else editActivityDraftMeals = arr;
+
+  const prefix = foodSearchMode==='new' ? 'act' : 'eact';
+  const proteinEl = document.getElementById(`${prefix}-protein`);
+  const carbsEl = document.getElementById(`${prefix}-carbs`);
+  const fatEl = document.getElementById(`${prefix}-fat`);
+  if(proteinEl) proteinEl.value = fmt((parseFloat(proteinEl.value)||0) + n.protein, 1);
+  if(carbsEl) carbsEl.value = fmt((parseFloat(carbsEl.value)||0) + n.carbs, 1);
+  if(fatEl) fatEl.value = fmt((parseFloat(fatEl.value)||0) + n.fat, 1);
+
+  FoodService.recordUsage(f);
+
+  const containerId = `${prefix}-meals`;
+  renderMealRows(containerId, arr, foodSearchMode);
+  bindMealHandlers(foodSearchMode);
+  closeFoodSearch();
+  showToast(`Added ${label} — ${n.calories} cal`);
 }
 
 function renderActivityRow(date){
@@ -2335,6 +2854,7 @@ function renderActivityEditRow(date){
         </div>
         <div id="eact-meals"></div>
         <button type="button" class="btn btn-ghost" id="eact-add-meal" style="margin-top:8px;">+ Add another</button>
+        <button type="button" class="btn-link" id="eact-food-search-btn" style="display:block; margin-top:8px;">🔎 Search a food database</button>
       </div>
       <details class="advanced-details" style="margin-top:12px;"${n && (n.protein||n.carbs||n.fat||n.water) ? ' open' : ''}>
         <summary>Protein, carbs, fat &amp; water <span style="font-weight:400; color:var(--moss);">(optional)</span></summary>
@@ -2375,7 +2895,7 @@ function startEditActivity(date){
   editingActivityDate = date;
   const n = state.nutritionLogs.find(x=>x.date===date);
   editActivityDraftMeals = n && n.meals && n.meals.length
-    ? n.meals.map(m=>({id:m.id||cryptoId(), label: MEAL_CATEGORIES.includes(m.label)?m.label:'Other', calories:m.calories}))
+    ? n.meals.map(m=>({id:m.id||cryptoId(), label: MEAL_CATEGORIES.includes(m.label)?m.label:'Other', calories:m.calories, ...(m.foodName?{foodName:m.foodName}:{})}))
     : [emptyMealRow()];
   renderLog();
 }
@@ -2390,7 +2910,7 @@ async function saveEditActivity(originalDate){
   const notes = document.getElementById('eact-notes').value.trim();
   const meals = editActivityDraftMeals
     .filter(m=> parseFloat(m.calories)>0)
-    .map(m=>({id:m.id||cryptoId(), label: MEAL_CATEGORIES.includes(m.label)?m.label:'Other', calories: parseFloat(m.calories)||0}));
+    .map(m=>({id:m.id||cryptoId(), label: MEAL_CATEGORIES.includes(m.label)?m.label:'Other', calories: parseFloat(m.calories)||0, ...(m.foodName?{foodName:m.foodName}:{})}));
 
   if(!date){ showToast('Enter a valid date.'); return; }
   const hasWeight = weightVal > 0;
