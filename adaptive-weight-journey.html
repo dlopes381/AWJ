@@ -567,29 +567,56 @@ function tdeeAtWeight(p, weightLbs, calibrationFactor){
 // persisted, so it's never stale.
 const CALIBRATION_WINDOW_DAYS = 28;
 const MIN_CALIBRATION_NUTRITION_LOGS = 10;
+// A handful of logs crammed into just a few days can produce a wildly overconfident
+// calibration factor — weight fluctuation dominates over any real trend that short a
+// timescale. Require the weigh-ins to actually span this many days, not just hit a
+// count, before trusting them (same kind of guard as MIN_GOAL_TRACKING_DAYS below).
+const CALIBRATION_MIN_SPAN_DAYS = 21;
 const CALIBRATION_MIN_FACTOR = 0.75;
 const CALIBRATION_MAX_FACTOR = 1.25;
 const CAL_PER_LB = 3500;
 
+// Always returns a diagnostic object (except when body stats are missing entirely,
+// where calibration is inapplicable) so the UI can explain *why* calibration isn't
+// active yet, rather than silently doing nothing. Check `.active` before using the
+// calibration numbers.
 function computeCalibration(){
   const p = state.profile;
   if(!hasBodyStats(p)) return null;
 
   const nutrition = [...state.nutritionLogs].sort((a,b)=> new Date(a.date)-new Date(b.date));
-  if(nutrition.length===0) return null;
-  const lastNutritionDate = new Date(nutrition[nutrition.length-1].date);
-  const nCutoff = lastNutritionDate.getTime() - CALIBRATION_WINDOW_DAYS*86400000;
-  const recentNutrition = nutrition.filter(n=> new Date(n.date).getTime() >= nCutoff);
-  if(recentNutrition.length < MIN_CALIBRATION_NUTRITION_LOGS) return null;
-  const avgDailyEaten = recentNutrition.reduce((s,n)=>s+nutritionTotalCalories(n),0)/recentNutrition.length;
+  let recentNutrition = [];
+  if(nutrition.length){
+    const lastNutritionDate = new Date(nutrition[nutrition.length-1].date);
+    const nCutoff = lastNutritionDate.getTime() - CALIBRATION_WINDOW_DAYS*86400000;
+    recentNutrition = nutrition.filter(n=> new Date(n.date).getTime() >= nCutoff);
+  }
 
   const weights = [...state.weightLogs].sort((a,b)=> new Date(a.date)-new Date(b.date));
-  if(weights.length < MIN_COMPLETION_POINTS) return null;
-  const lastWeightDate = new Date(weights[weights.length-1].date);
-  const wCutoff = lastWeightDate.getTime() - CALIBRATION_WINDOW_DAYS*86400000;
-  const recentWeights = weights.filter(l=> new Date(l.date).getTime() >= wCutoff);
-  if(recentWeights.length < MIN_COMPLETION_POINTS) return null;
+  let recentWeights = [];
+  let daysTracked = 0;
+  if(weights.length){
+    const lastWeightDate = new Date(weights[weights.length-1].date);
+    const wCutoff = lastWeightDate.getTime() - CALIBRATION_WINDOW_DAYS*86400000;
+    recentWeights = weights.filter(l=> new Date(l.date).getTime() >= wCutoff);
+    if(recentWeights.length >= 2){
+      daysTracked = Math.round((new Date(recentWeights[recentWeights.length-1].date) - new Date(recentWeights[0].date))/86400000);
+    }
+  }
 
+  const progress = {
+    active: false,
+    nutritionLogsTracked: recentNutrition.length,
+    nutritionLogsNeeded: MIN_CALIBRATION_NUTRITION_LOGS,
+    daysTracked,
+    daysNeeded: CALIBRATION_MIN_SPAN_DAYS,
+  };
+
+  if(recentNutrition.length < MIN_CALIBRATION_NUTRITION_LOGS) return progress;
+  if(recentWeights.length < MIN_COMPLETION_POINTS) return progress;
+  if(daysTracked < CALIBRATION_MIN_SPAN_DAYS) return progress;
+
+  const avgDailyEaten = recentNutrition.reduce((s,n)=>s+nutritionTotalCalories(n),0)/recentNutrition.length;
   const first = new Date(recentWeights[0].date);
   const xs = recentWeights.map(l=> (new Date(l.date)-first)/86400000);
   const ys = recentWeights.map(l=> l.weight);
@@ -603,11 +630,13 @@ function computeCalibration(){
   const calibrationFactor = Math.min(CALIBRATION_MAX_FACTOR, Math.max(CALIBRATION_MIN_FACTOR, rawFactor));
 
   return {
+    active: true,
     calibrationFactor,
     actualTdee: Math.round(actualTdee),
     calcTdee: Math.round(calcTdee),
     avgDailyEaten: Math.round(avgDailyEaten),
     windowDays: CALIBRATION_WINDOW_DAYS,
+    daysTracked,
     nutritionLogs: recentNutrition.length,
     weightLogs: recentWeights.length,
     clamped: Math.abs(rawFactor-calibrationFactor) > 0.001,
@@ -659,7 +688,7 @@ function computePhases(p){
   targets.push(p.goalWeight);
   const dedup = [...new Set(targets)].sort((a,b)=> dir>0 ? a-b : b-a);
   const calibration = computeCalibration();
-  const calibrationFactor = calibration ? calibration.calibrationFactor : 1;
+  const calibrationFactor = calibration?.active ? calibration.calibrationFactor : 1;
   return dedup.map((t,i)=>({
     id:i+1,
     weightTarget:t,
@@ -1355,6 +1384,7 @@ function renderDashboard(){
   const milestonePct = goalDone ? 100 : Math.max(0, Math.min(100, (segmentProgressed/segmentTotal)*100));
 
   const el = document.getElementById('view-dashboard');
+  const insightsWasOpen = document.getElementById('dash-insights')?.open;
   el.innerHTML = `
     <div class="dash-top">
       <div class="hero-card">
@@ -1454,7 +1484,7 @@ function renderDashboard(){
       </div>
     </div>
 
-    <details class="disclosure" id="dash-insights">
+    <details class="disclosure" id="dash-insights"${insightsWasOpen ? ' open' : ''}>
       <summary>
         <span>Insights <span class="disclosure-sub">trends, charts &amp; strategy</span></span>
         <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
@@ -1470,7 +1500,7 @@ function renderDashboard(){
                 <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Current strategy</div><div class="mono" style="font-weight:600; margin-top:4px;">${deficitLabel}</div></div>
                 <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Calculated multiplier</div><div class="mono" style="font-weight:600; margin-top:4px;">${fmt(p.recommendedMultiplier)}x</div></div>
               </div>
-              <div class="helper" style="margin-top:10px;">Starting calories were ${calcStartingCalories(p)} cal/day at ${fmt(p.startWeight,0)} lbs.${calibration? ` Calorie targets are calibrated ${calibration.calibrationFactor>=1?'up':'down'} ${fmt(Math.abs((calibration.calibrationFactor-1)*100),1)}% based on your logged results.` : ''}</div>
+              <div class="helper" style="margin-top:10px;">Starting calories were ${calcStartingCalories(p)} cal/day at ${fmt(p.startWeight,0)} lbs.${calibration?.active? ` Calorie targets are calibrated ${calibration.calibrationFactor>=1?'up':'down'} ${fmt(Math.abs((calibration.calibrationFactor-1)*100),1)}% based on your logged results.` : calibration && calibration.daysTracked>0? ` Calibration isn't active yet — needs ${calibration.daysNeeded} days of tracked history (${calibration.daysTracked} so far) to avoid overreacting to a short noisy stretch.` : ''}</div>
             ` : `
               <div class="helper">Add your height, age, sex, and activity level in Setup to see a personalized BMR/TDEE breakdown.</div>
             `}
@@ -1579,7 +1609,7 @@ function renderCalcDetails(){
   const activityLabelMap = {sedentary:'Sedentary (1.20×)', light:'Light activity (1.375×)', moderate:'Moderate activity (1.55×)', veryActive:'Very active (1.725×)'};
   const startingCalories = calcStartingCalories(p);
   const calibration = computeCalibration();
-  const calibrationFactor = calibration ? calibration.calibrationFactor : 1;
+  const calibrationFactor = calibration?.active ? calibration.calibrationFactor : 1;
   const phaseBmr = calcBMR(active.weightTarget, p.height, p.age, p.sex);
   const phaseAdjust = taperedAdjustment(p, active.weightTarget);
   const isTapered = p.taperDeficit && phaseAdjust !== p.deficit;
@@ -1629,22 +1659,24 @@ function renderCalcDetails(){
     </div>
 
     <div class="section-title">Metabolic calibration</div>
-    ${calibration ? `
+    ${calibration?.active ? `
     <div class="card">
       <div class="row2">
         <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Formula estimate</div><div class="mono" style="font-weight:600; margin-top:4px;">${calibration.calcTdee} cal</div></div>
         <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Your actual pace implies</div><div class="mono" style="font-weight:600; margin-top:4px;">${calibration.actualTdee} cal</div></div>
       </div>
-      <div class="helper" style="margin-top:10px;">Based on ${calibration.avgDailyEaten} cal/day eaten vs. your weight trend, over your last ${calibration.nutritionLogs} food logs and ${calibration.weightLogs} weigh-ins (${calibration.windowDays}-day window). Your calorie targets below are adjusted ${calibrationFactor>=1?'up':'down'} by ${fmt(Math.abs((calibrationFactor-1)*100),1)}% to match your real-world results.${calibration.clamped? ' (Capped at a 25% adjustment for stability.)':''}</div>
+      <div class="helper" style="margin-top:10px;">Based on ${calibration.avgDailyEaten} cal/day eaten vs. your weight trend, over your last ${calibration.nutritionLogs} food logs and ${calibration.weightLogs} weigh-ins spanning ${calibration.daysTracked} days (${calibration.windowDays}-day window). Your calorie targets below are adjusted ${calibrationFactor>=1?'up':'down'} by ${fmt(Math.abs((calibrationFactor-1)*100),1)}% to match your real-world results.${calibration.clamped? ' (Capped at a 25% adjustment for stability.)':''}</div>
     </div>
+    ` : calibration && (calibration.nutritionLogsTracked>0 || calibration.daysTracked>0) ? `
+    <div class="card"><div class="helper">Not active yet — needs at least ${calibration.nutritionLogsNeeded} food logs (you have ${calibration.nutritionLogsTracked}) spanning ${calibration.daysNeeded} days (you have ${calibration.daysTracked}) within a ${CALIBRATION_WINDOW_DAYS}-day window. Requiring real elapsed time, not just a log count, keeps a short noisy stretch from swinging your targets before there's a reliable trend to go on.</div></div>
     ` : `
-    <div class="card"><div class="helper">Log both your weight and calories consistently for a few weeks (at least ${MIN_CALIBRATION_NUTRITION_LOGS} food logs within a ${CALIBRATION_WINDOW_DAYS}-day window) and we'll compare your actual results to the formula estimate to fine-tune your targets.</div></div>
+    <div class="card"><div class="helper">Log both your weight and calories consistently for a few weeks (at least ${MIN_CALIBRATION_NUTRITION_LOGS} food logs spanning ${CALIBRATION_MIN_SPAN_DAYS} days, within a ${CALIBRATION_WINDOW_DAYS}-day window) and we'll compare your actual results to the formula estimate to fine-tune your targets.</div></div>
     `}
 
     <div class="section-title">Current phase (${fmt(active.weightTarget,0)} lbs)</div>
     <div class="card stack">
       ${detailRow('Phase BMR', `Recalculated at ${fmt(active.weightTarget,0)} lbs (same formula, new weight)`, `${phaseBmr} cal`)}
-      ${detailRow('Phase TDEE', `${phaseBmr} cal × ${ACTIVITY_MULTIPLIERS[p.activityLevel]}${calibration? ` × ${fmt(calibrationFactor,2)} calibration`:''}`, `${active.maintenance} cal`)}
+      ${detailRow('Phase TDEE', `${phaseBmr} cal × ${ACTIVITY_MULTIPLIERS[p.activityLevel]}${calibration?.active? ` × ${fmt(calibrationFactor,2)} calibration`:''}`, `${active.maintenance} cal`)}
       ${detailRow(`Phase eating (${adjustWord})`, `${active.maintenance} cal ${goalType==='gain'?'+':goalType==='maintain'?'':'−'} ${goalType==='maintain'?'':phaseAdjust+' cal'}${isTapered?' (tapered)':''}`, `${active.eating} cal`)}
       <div class="helper" style="margin-top:2px;">This is today's target — it steps automatically as your rolling average moves into a new phase, recalculated fresh at each phase's weight rather than scaled from your starting TDEE.</div>
     </div>
@@ -2083,7 +2115,7 @@ function renderRoadmap(){
   const active = getActivePhase(phases, avgW);
   const calibration = hasBodyStats(p) ? computeCalibration() : null;
   const notes = [];
-  if(calibration) notes.push(`calorie targets below are calibrated ${calibration.calibrationFactor>=1?'up':'down'} ${fmt(Math.abs((calibration.calibrationFactor-1)*100),1)}% based on your logged results`);
+  if(calibration?.active) notes.push(`calorie targets below are calibrated ${calibration.calibrationFactor>=1?'up':'down'} ${fmt(Math.abs((calibration.calibrationFactor-1)*100),1)}% based on your logged results`);
   if(p.taperDeficit) notes.push(`${(p.goalType||'loss')==='gain'?'surplus':'deficit'} tapers by up to 40% over the final third of your journey`);
   const el = document.getElementById('view-roadmap');
   el.innerHTML = `
