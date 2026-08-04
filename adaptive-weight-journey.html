@@ -428,6 +428,25 @@ const DATE_FILTERS = [
   {val:'allTime', label:'All Time'},
 ];
 
+// Personal weight-to-clothing-size reference table (190-310 lbs, 10lb steps).
+// Waist/pants are numeric ranges (interpolated); shirt is categorical (nearest row).
+const SIZE_TABLE = [
+  {weight:190, waistLow:35,   waistHigh:36.5, pantsLow:33, pantsHigh:36, shirt:'L–XL'},
+  {weight:200, waistLow:36,   waistHigh:38,   pantsLow:35, pantsHigh:37, shirt:'L–XL'},
+  {weight:210, waistLow:37.5, waistHigh:39,   pantsLow:36, pantsHigh:38, shirt:'XL–2XL'},
+  {weight:220, waistLow:39.5, waistHigh:41,   pantsLow:37, pantsHigh:39, shirt:'XL–2XL'},
+  {weight:230, waistLow:41,   waistHigh:42.5, pantsLow:38, pantsHigh:40, shirt:'XL–2XL'},
+  {weight:240, waistLow:42.5, waistHigh:44,   pantsLow:39, pantsHigh:40, shirt:'XL–2XL'},
+  {weight:250, waistLow:44,   waistHigh:45.5, pantsLow:40, pantsHigh:41, shirt:'2XL'},
+  {weight:260, waistLow:45.5, waistHigh:46.5, pantsLow:41, pantsHigh:42, shirt:'2XL'},
+  {weight:270, waistLow:46.5, waistHigh:48,   pantsLow:42, pantsHigh:43, shirt:'2XL–3XL'},
+  {weight:280, waistLow:48,   waistHigh:49.5, pantsLow:43, pantsHigh:44, shirt:'2XL–3XL'},
+  {weight:290, waistLow:49.5, waistHigh:50.5, pantsLow:44, pantsHigh:44, shirt:'3XL (better fit)'},
+  {weight:300, waistLow:50.5, waistHigh:51.5, pantsLow:44, pantsHigh:46, shirt:'3XL (slightly looser)'},
+  {weight:310, waistLow:51,   waistHigh:52,   pantsLow:44, pantsHigh:46, shirt:'3XL'},
+];
+const SIZE_ESTIMATE_DISCLAIMER = 'Estimated from a personal reference table (weight-to-size), not a substitute for actual measurements.';
+
 // ---------------- persistence ----------------
 // Legacy entries stored a single flat `calories` number; newer entries store a
 // `meals` array (multiple calorie line-items per day) that gets summed for display.
@@ -695,6 +714,60 @@ function computePhases(p){
     maintenance: computePhaseMaintenance(p,t,calibrationFactor),
     eating: computePhaseEating(p,t,calibrationFactor)
   }));
+}
+
+// Maps a weight to an estimated waist/pants/shirt size using SIZE_TABLE.
+// Waist/pants are numeric ranges, interpolated (or extrapolated past the
+// table's 190-310 ends using the slope of the nearest two rows). Shirt size
+// is categorical, so it snaps to the closest-by-weight row instead.
+function estimateSizeForWeight(w){
+  const t = SIZE_TABLE;
+  let lo, hi;
+  if(w <= t[0].weight){ lo = t[0]; hi = t[1]; }
+  else if(w >= t[t.length-1].weight){ lo = t[t.length-2]; hi = t[t.length-1]; }
+  else {
+    for(let i=0;i<t.length-1;i++){
+      if(w >= t[i].weight && w <= t[i+1].weight){ lo = t[i]; hi = t[i+1]; break; }
+    }
+  }
+  const frac = (w - lo.weight) / (hi.weight - lo.weight);
+  const lerp = (a,b)=> a + (b-a)*frac;
+  const waistLow = lerp(lo.waistLow, hi.waistLow);
+  const waistHigh = lerp(lo.waistHigh, hi.waistHigh);
+  const pantsLow = lerp(lo.pantsLow, hi.pantsLow);
+  const pantsHigh = lerp(lo.pantsHigh, hi.pantsHigh);
+  const nearestRow = t.reduce((a,b)=> Math.abs(b.weight-w) < Math.abs(a.weight-w) ? b : a);
+  const fmtRange = (a,b)=> Math.abs(a-b) < 0.05 ? fmt(a,1) : `${fmt(a,1)}–${fmt(b,1)}`;
+  return {
+    waist: `${fmtRange(waistLow, waistHigh)}"`,
+    pants: fmtRange(pantsLow, pantsHigh),
+    shirt: nearestRow.shirt
+  };
+}
+
+function renderSizeEstimateCard(currentW, goalW){
+  const cur = estimateSizeForWeight(currentW);
+  const goal = estimateSizeForWeight(goalW);
+  return `
+    <div class="section-title">Estimated size</div>
+    <div class="card">
+      <div class="row2">
+        <div>
+          <div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">At ${fmt(currentW,0)} lbs (now)</div>
+          <div class="mono" style="margin-top:4px;">Waist ${cur.waist}</div>
+          <div class="mono">Pants ${cur.pants}</div>
+          <div class="mono">Shirt ${cur.shirt}</div>
+        </div>
+        <div>
+          <div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">At ${fmt(goalW,0)} lbs (goal)</div>
+          <div class="mono" style="margin-top:4px;">Waist ${goal.waist}</div>
+          <div class="mono">Pants ${goal.pants}</div>
+          <div class="mono">Shirt ${goal.shirt}</div>
+        </div>
+      </div>
+      <div class="helper" style="margin-top:10px;">${SIZE_ESTIMATE_DISCLAIMER}</div>
+    </div>
+  `;
 }
 
 function phaseDirection(phases){
@@ -1514,6 +1587,8 @@ function renderDashboard(){
         <div class="card trail-wrap">${renderTrailSVG(phases, avgW)}</div>
         <div class="helper" style="margin-top:8px;">Each dot marks a calorie-target phase from ${fmt(p.startWeight,0)} to ${fmt(p.goalWeight,0)} lbs — filled pine dots are reached, gold is your current step.</div>
 
+        ${renderSizeEstimateCard(avgW, p.goalWeight)}
+
         <div class="section-title">Rolling weight average <span style="font-weight:400; color:var(--moss); font-size:12px;">the trend that matters most</span></div>
         <div class="card">${renderRollingWeightChart()}</div>
         ${renderRollingWeightInsight()}
@@ -2129,18 +2204,21 @@ function renderRoadmap(){
         const badge = isActive? '<span class="badge badge-current">Current</span>' : reached? '<span class="badge badge-reached">Reached</span>' : '<span class="badge badge-upcoming">Upcoming</span>';
         const dotColor = isActive? 'var(--gold)' : reached? 'var(--pine)' : 'var(--line)';
         const rowClass = isActive? 'phase-row phase-current' : reached? 'phase-row phase-completed' : 'phase-row phase-upcoming';
+        const size = estimateSizeForWeight(ph.weightTarget);
         return `<div class="${rowClass}">
           <div class="phase-left">
             <div class="phase-dot" style="background:${dotColor};"></div>
             <div>
               <div class="phase-target">${fmt(ph.weightTarget,0)} lbs</div>
               <div class="phase-cals">${ph.eating} cal/day · maintenance ${ph.maintenance}</div>
+              <div class="phase-cals">~waist ${size.waist} · ${size.shirt}</div>
             </div>
           </div>
           ${badge}
         </div>`;
       }).join('')}
     </div>
+    <div class="helper" style="margin-top:12px;">${SIZE_ESTIMATE_DISCLAIMER}</div>
   `;
 }
 
@@ -3130,6 +3208,31 @@ function renderSettings(){
         <div class="helper">Open Food Facts covers packaged groceries well but has little restaurant/fast-food data. Adding a free FDC key (<a href="https://fdc.nal.usda.gov/api-key-signup.html" target="_blank" rel="noopener" style="color:var(--pine);">sign up here</a>) also searches USDA's branded-food database, which includes restaurant items. Stored only in this browser, never exported with your data.</div>
       </div>
       <button class="btn btn-ghost" id="btn-save-fdc-key" style="width:auto; padding:10px 16px;">Save key</button>
+    </div>
+
+    <div class="section-title">Clothing size reference</div>
+    <div class="card">
+      <table style="width:100%; border-collapse:collapse; font-size:13px;">
+        <thead>
+          <tr style="text-align:left; color:var(--moss); font-size:11px; text-transform:uppercase;">
+            <th style="padding:4px 6px 8px 0;">Weight</th>
+            <th style="padding:4px 6px 8px;">Waist</th>
+            <th style="padding:4px 6px 8px;">Pants</th>
+            <th style="padding:4px 0 8px 6px;">Shirt</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${SIZE_TABLE.map(row=>`
+            <tr class="mono" style="border-top:1px solid var(--line);">
+              <td style="padding:6px 6px 6px 0;">${row.weight} lbs</td>
+              <td style="padding:6px;">${row.waistLow===row.waistHigh?fmt(row.waistLow,1):`${fmt(row.waistLow,1)}–${fmt(row.waistHigh,1)}`}"</td>
+              <td style="padding:6px;">${row.pantsLow===row.pantsHigh?fmt(row.pantsLow,1):`${fmt(row.pantsLow,1)}–${fmt(row.pantsHigh,1)}`}</td>
+              <td style="padding:6px 0 6px 6px;">${row.shirt}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+      <div class="helper" style="margin-top:10px;">${SIZE_ESTIMATE_DISCLAIMER}</div>
     </div>
 
     <div class="section-title">Data</div>
