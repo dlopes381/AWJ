@@ -241,6 +241,18 @@
   .phase-row.phase-current .phase-target{font-size:17px;}
   .phase-row.phase-current .phase-dot{width:11px; height:11px;}
 
+  /* ---------- milestone breadcrumb (Roadmap tab) ---------- */
+  .milestone-breadcrumb{display:flex; flex-direction:column; margin-bottom:16px;}
+  .breadcrumb-stop{display:flex; align-items:center; gap:10px; padding:6px 0; position:relative;}
+  .breadcrumb-stop:not(:last-child)::after{
+    content:''; position:absolute; left:4px; top:20px; bottom:-6px; width:2px; background:var(--line);
+  }
+  .breadcrumb-dot{width:9px; height:9px; border-radius:50%; background:var(--line); flex-shrink:0; z-index:1;}
+  .breadcrumb-dot.reached{background:var(--pine);}
+  .breadcrumb-dot.current{background:var(--gold); width:11px; height:11px;}
+  .breadcrumb-label{font-size:12.5px; color:var(--ink-soft);}
+  .breadcrumb-label strong{font-family:'IBM Plex Mono'; color:var(--ink); margin-right:4px;}
+
   .banner{
     display:flex; gap:10px; align-items:flex-start; padding:13px 14px; border-radius:13px;
     background:var(--gold-tint); border:1px solid #F0DFAF; font-size:13px; color:#7A5A0C; line-height:1.45;
@@ -294,6 +306,10 @@
   }
   .trend-arrow{width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
   .trend-sub{font-size:12px; color:var(--moss); margin-top:8px;}
+  /* 3-up 7/14/30-day breakdown — smaller type than .stat-box given the narrower
+     per-cell width budget on a 320-375px viewport. */
+  .trend-window-grid{display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:12px;}
+  .trend-window-grid .mono{font-size:15px;}
 
   .empty-state{text-align:center; padding:40px 12px; color:var(--moss); font-size:13.5px;}
 
@@ -387,7 +403,7 @@
 <script src="food-service.js"></script>
 <script>
 const STORAGE_KEY = 'awj:data';
-let state = { profile:null, weightLogs:[], nutritionLogs:[], ackPhaseId:null };
+let state = { profile:null, weightLogs:[], nutritionLogs:[], ackPhaseId:null, milestones:[] };
 let activeTab = 'dashboard';
 let editingActivityDate = null;
 let activityDraftMeals = [];
@@ -466,6 +482,7 @@ async function loadState(){
   }catch(e){ /* no data yet */ }
   if(!state.weightLogs) state.weightLogs = [];
   if(!state.nutritionLogs) state.nutritionLogs = [];
+  if(!Array.isArray(state.milestones)) state.milestones = [];
   migrateNutritionLogs();
 }
 async function saveState(){
@@ -496,7 +513,7 @@ function importDataFile(file){
       return;
     }
     if(!confirm('This will replace all current data on this device with the imported file. Continue?')) return;
-    state = { profile: parsed.profile||null, weightLogs: parsed.weightLogs, nutritionLogs: parsed.nutritionLogs, ackPhaseId: parsed.ackPhaseId||null };
+    state = { profile: parsed.profile||null, weightLogs: parsed.weightLogs, nutritionLogs: parsed.nutritionLogs, ackPhaseId: parsed.ackPhaseId||null, milestones: Array.isArray(parsed.milestones) ? parsed.milestones : [] };
     migrateNutritionLogs();
     await saveState();
     showToast('Data imported.');
@@ -1488,6 +1505,8 @@ function renderDashboard(){
         ${!goalDone ? `<div class="milestone-progress-track"><div class="milestone-progress-fill" style="width:${milestonePct}%;"></div></div>` : ''}
       </div>
 
+      ${!goalDone ? renderTrendStrip() : ''}
+
       ${!goalDone && tooLow ? `<div class="banner" style="background:#F7E0DA; border-color:#E7B7A8; color:#7A3320;">⚠️ <div>This calorie target may be too aggressive.</div></div>` : ''}
 
       <div class="stat-grid">
@@ -1582,6 +1601,11 @@ function renderDashboard(){
         </details>
 
         ${renderEstimatedTimeline()}
+
+        <div class="section-title">Weight trend &amp; forecast</div>
+        <div class="card">${renderWeightTrendCard()}</div>
+        ${renderGoalForecastCard()}
+        ${renderProgressCheckCard()}
 
         <div class="section-title">Journey</div>
         <div class="card trail-wrap">${renderTrailSVG(phases, avgW)}</div>
@@ -1836,8 +1860,8 @@ function leastSquaresSlope(xs, ys){
   return { slope, intercept };
 }
 
-function computeTrend(){
-  const logs = [...state.weightLogs].sort((a,b)=> new Date(a.date)-new Date(b.date));
+function computeTrend(logs = state.weightLogs){
+  logs = [...logs].sort((a,b)=> new Date(a.date)-new Date(b.date));
   if(logs.length < 2) return null;
   const first = new Date(logs[0].date);
   const xs = logs.map(l => (new Date(l.date) - first)/86400000);
@@ -1855,11 +1879,24 @@ const MIN_COMPLETION_POINTS = 4;
 // to reach, so a few noisy days can't produce a wildly overconfident date.
 const MIN_GOAL_TRACKING_DAYS = 21;
 const MAX_GOAL_EXTRAPOLATION_RATIO = 6;
+// Below this lbs/day magnitude a slope is treated as "not really moving" rather
+// than confidently toward/away from a goal — shared by estimateCompletion() and
+// getGoalProgressDirection() so "is this basically flat" means the same thing everywhere.
+const TREND_NOISE_EPSILON = 0.02;
+
+// Shared by estimateCompletion() and WeightTrendEngine.forecastGoal() so there's one
+// definition of "enough history to trust a projection this far out" rather than two
+// copies of the same guard that could quietly drift apart.
+function isExtrapolationConfident(trackedDays, projectedDays){
+  return trackedDays >= MIN_GOAL_TRACKING_DAYS && projectedDays <= trackedDays * MAX_GOAL_EXTRAPOLATION_RATIO;
+}
 
 // Uses only the most recent weigh-ins (not full history) so the estimate reflects
-// current pace, not a stale average from before a diet/activity change.
-function computeRecentTrend(windowDays=COMPLETION_WINDOW_DAYS){
-  const logs = [...state.weightLogs].sort((a,b)=> new Date(a.date)-new Date(b.date));
+// current pace, not a stale average from before a diet/activity change. windowDays
+// is anchored to the LATEST logged date, not calendar-today (same idiom as
+// rollingWindowSeries) — a stale last weigh-in means a stale window, not a crash.
+function computeRecentTrend(windowDays=COMPLETION_WINDOW_DAYS, logs=state.weightLogs){
+  logs = [...logs].sort((a,b)=> new Date(a.date)-new Date(b.date));
   if(logs.length < 2) return null;
   const lastDate = new Date(logs[logs.length-1].date);
   const cutoff = lastDate.getTime() - windowDays*86400000;
@@ -1883,7 +1920,7 @@ function estimateCompletion(){
   if(!recent) return { status:'insufficient' };
 
   const dir = p.goalWeight >= p.startWeight ? 1 : -1;
-  const movingTowardGoal = dir>0 ? recent.slope > 0.02 : recent.slope < -0.02;
+  const movingTowardGoal = dir>0 ? recent.slope > TREND_NOISE_EPSILON : recent.slope < -TREND_NOISE_EPSILON;
   if(!movingTowardGoal) return { status:'stalled' };
 
   const avgW = rollingAverageWeight();
@@ -1899,52 +1936,40 @@ function estimateCompletion(){
 
   const allLogs = [...state.weightLogs].sort((a,b)=> new Date(a.date)-new Date(b.date));
   const trackedDays = Math.round((new Date(allLogs[allLogs.length-1].date) - new Date(allLogs[0].date))/86400000);
-  const goalConfident = trackedDays >= MIN_GOAL_TRACKING_DAYS && goalDays <= trackedDays * MAX_GOAL_EXTRAPOLATION_RATIO;
+  const goalConfident = isExtrapolationConfident(trackedDays, goalDays);
   const goalDate = goalConfident ? new Date(today.getTime() + goalDays*86400000) : null;
 
   return { status:'ok', goalDays, goalDate, goalConfident, trackedDays, phaseDays, phaseDate, windowLogs: recent.logs.length };
 }
 
+// Near-term "next phase" date only — the far-term "goal weight" date used to live
+// here too, but as a single 21-day-window extrapolation it could silently disagree
+// with the more conservative multi-window forecast now shown in the Goal forecast
+// card below (see WeightTrendEngine), so that number moved there and became the
+// sole "when will I reach my goal" figure app-wide.
 function renderEstimatedTimeline(){
   const est = estimateCompletion();
   if(est.status==='reached') return '';
   if(est.status==='insufficient'){
     return `
       <div class="section-title">Estimated timeline</div>
-      <div class="card"><div class="helper">Log at least ${MIN_COMPLETION_POINTS} weigh-ins within the last ${COMPLETION_WINDOW_DAYS} days to estimate when you'll hit your goal.</div></div>
+      <div class="card"><div class="helper">Log at least ${MIN_COMPLETION_POINTS} weigh-ins within the last ${COMPLETION_WINDOW_DAYS} days to estimate when you'll reach your next calorie phase.</div></div>
     `;
   }
   if(est.status==='stalled'){
     return `
       <div class="section-title">Estimated timeline</div>
-      <div class="card"><div class="helper">Your recent trend isn't moving toward your goal yet, so we can't estimate a completion date.</div></div>
+      <div class="card"><div class="helper">Your recent trend isn't moving in the right direction yet, so we can't estimate your next phase date.</div></div>
     `;
   }
-  const goalCell = est.goalConfident ? `
-    <div class="mono" style="font-weight:600; font-size:16px; margin-top:4px;">${prettyDateObj(est.goalDate)}</div>
-    <div class="helper" style="margin-top:2px;">~${est.goalDays} day${est.goalDays===1?'':'s'} at current pace</div>
-  ` : `
-    <div class="mono" style="font-weight:600; font-size:16px; margin-top:4px;">—</div>
-    <div class="helper" style="margin-top:2px;">${est.trackedDays < MIN_GOAL_TRACKING_DAYS
-      ? `Log for ${MIN_GOAL_TRACKING_DAYS - est.trackedDays} more day${MIN_GOAL_TRACKING_DAYS-est.trackedDays===1?'':'s'} for a reliable estimate`
-      : `Too early to project this far out reliably`}</div>
-  `;
 
   return `
     <div class="section-title">Estimated timeline</div>
     <div class="card">
-      <div class="row2">
-        <div>
-          <div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Next phase</div>
-          <div class="mono" style="font-weight:600; font-size:16px; margin-top:4px;">${est.phaseDays<=0? 'Any day now' : prettyDateObj(est.phaseDate)}</div>
-          <div class="helper" style="margin-top:2px;">${est.phaseDays<=0? 'Log to confirm' : `~${est.phaseDays} day${est.phaseDays===1?'':'s'} at current pace`}</div>
-        </div>
-        <div>
-          <div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Goal weight</div>
-          ${goalCell}
-        </div>
-      </div>
-      <div class="helper" style="margin-top:10px;">Based on your trend over your last ${est.windowLogs} weigh-ins. Updates as you log more.</div>
+      <div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Next phase</div>
+      <div class="mono" style="font-weight:600; font-size:16px; margin-top:4px;">${est.phaseDays<=0? 'Any day now' : prettyDateObj(est.phaseDate)}</div>
+      <div class="helper" style="margin-top:2px;">${est.phaseDays<=0? 'Log to confirm' : `~${est.phaseDays} day${est.phaseDays===1?'':'s'} at current pace`}</div>
+      <div class="helper" style="margin-top:10px;">Based on your trend over your last ${est.windowLogs} weigh-ins. Updates as you log more. See Weight trend &amp; forecast below for when you might reach your overall goal.</div>
     </div>
   `;
 }
@@ -1954,7 +1979,28 @@ function renderEstimatedTimeline(){
 // which applies the same kind of guard to its longer-range projection).
 const MIN_TREND_SPAN_DAYS = 4;
 
+// ---------------- goal-progress direction (shared by the chart and the trend engine) ----------------
+// One canonical definition of "is this rate of weight change moving toward the
+// goal, away from it, or basically flat" — used by renderTrendChart's arrow/color
+// below AND by WeightTrendEngine/the new trend UI, so the app never shows two
+// different interpretations of the same raw slope side by side (e.g. a gain-goal
+// user gaining weight is making progress and should read as good, not bad).
+// positive = progress toward goal, negative = away, 0 = maintain (no progress axis)
+function normalizeToGoalProgress(ratePerWeek, goalType){
+  if((goalType||'loss')==='maintain') return 0;
+  return goalType==='gain' ? ratePerWeek : -ratePerWeek;
+}
+// 'toward' | 'away' | 'neutral' — neutral covers both maintain and a near-flat rate
+function getGoalProgressDirection(ratePerWeek, goalType){
+  if((goalType||'loss')==='maintain') return 'neutral';
+  const n = normalizeToGoalProgress(ratePerWeek, goalType);
+  if(Math.abs(n) < TREND_NOISE_EPSILON*7) return 'neutral';
+  return n > 0 ? 'toward' : 'away';
+}
+
 function renderTrendChart(){
+  const p = state.profile;
+  const goalType = p.goalType || 'loss';
   const trend = computeTrend();
   if(!trend){
     return `<div class="empty-state">Log at least 2 weigh-ins to see your trend.</div>`;
@@ -1983,17 +2029,27 @@ function renderTrendChart(){
   const trendX1 = mapX(0), trendY1 = mapY(yStart);
   const trendX2 = mapX(n-1), trendY2 = mapY(yEnd);
 
+  // The bucket below describes literal weight movement (accurate regardless of
+  // goal); the COLOR reflects whether that movement is progress toward THIS
+  // profile's goal (getGoalProgressDirection) — magnitude breakpoints (0.25/2.5)
+  // are the same numbers the chart already used, just applied symmetrically via
+  // magnitude instead of only on the loss side.
+  const magnitude = Math.abs(slopePerWeek);
   let color, label, arrow;
   if(daysSpan < MIN_TREND_SPAN_DAYS){
     color='var(--moss)'; label=`Only ${Math.round(daysSpan)} day${Math.round(daysSpan)===1?'':'s'} of history so far — keep logging for a reliable weekly trend`; arrow='flat';
-  } else if(slopePerWeek <= -2.5){
-    color='var(--gold)'; label=`Losing fast — about ${fmt(Math.abs(slopePerWeek))} lbs/week`; arrow='down';
-  } else if(slopePerWeek <= -0.75){
-    color='var(--pine)'; label=`Trending down — about ${fmt(Math.abs(slopePerWeek))} lbs/week`; arrow='down';
-  } else if(slopePerWeek < 0.25){
+  } else if(magnitude < 0.25){
     color='var(--moss)'; label='Roughly flat this stretch'; arrow='flat';
   } else {
-    color='var(--danger)'; label=`Trending up — about ${fmt(slopePerWeek)} lbs/week`; arrow='up';
+    const direction = getGoalProgressDirection(slopePerWeek, goalType);
+    const goingDown = slopePerWeek < 0;
+    arrow = goingDown ? 'down' : 'up';
+    const verb = goingDown ? 'Losing' : 'Gaining';
+    const fast = magnitude >= 2.5;
+    label = (direction==='toward' && fast)
+      ? `${verb} fast — about ${fmt(magnitude)} lbs/week`
+      : `Trending ${goingDown?'down':'up'} — about ${fmt(magnitude)} lbs/week`;
+    color = direction==='toward' ? (fast ? 'var(--gold)' : 'var(--pine)') : direction==='away' ? 'var(--danger)' : 'var(--moss)';
   }
   const arrowGlyph = arrow==='down' ? '&#8595;' : arrow==='up' ? '&#8593;' : '&#8594;';
 
@@ -2006,6 +2062,28 @@ function renderTrendChart(){
       <circle cx="${x}" cy="${y}" r="2.75" fill="var(--card)" stroke="var(--moss)" stroke-width="1.2" style="pointer-events:none;"/>`;
   }).join('');
 
+  // Goal reference line: only drawn when the goal falls within a bounded margin of
+  // the plotted range, so a goal far outside current readings doesn't flatten the
+  // whole chart into an unreadable near-flat line.
+  const showGoalLine = goalType!=='maintain' && p.goalWeight >= minW - range*1.5 && p.goalWeight <= maxW + range*1.5;
+  const goalY = showGoalLine ? mapY(p.goalWeight) : null;
+
+  // Forward projection: tied to the SAME forecastGoal() used by the Goal Forecast
+  // card below (single source of truth, not a separate heuristic) — only drawn when
+  // that forecast is confident AND the goal line itself is visible. The chart's
+  // x-axis is index-spaced (not a literal date scale), so the projection's x
+  // position is approximated by converting the forecast's day-distance into the
+  // same average index-spacing as the plotted points.
+  const forecast = showGoalLine ? WeightTrendEngine.forecastGoal(p, rollingAverageWeight(), WeightTrendEngine.analyze()) : null;
+  const showProjection = !!(forecast && forecast.status==='ok' && forecast.confident);
+  let projX = null;
+  if(showProjection){
+    const avgDaysPerStep = daysSpan / (n-1 || 1);
+    const daysUntilForecast = Math.max(0, Math.round((forecast.forecastDate - new Date())/86400000));
+    const extendedIndex = (n-1) + (avgDaysPerStep>0 ? daysUntilForecast/avgDaysPerStep : 0);
+    projX = Math.min(mapX(extendedIndex), w - padLeft*0.6);
+  }
+
   return `
     <div class="trend-label">
       <span class="trend-arrow" style="background:${color}22; color:${color};">${arrowGlyph}</span>
@@ -2013,8 +2091,12 @@ function renderTrendChart(){
     </div>
     <div class="trail-wrap trail-tip-wrap" style="position:relative;">
       <svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg">
+        ${showGoalLine ? `<line x1="${padLeft}" y1="${goalY}" x2="${w-padLeft}" y2="${goalY}" stroke="var(--moss)" stroke-width="1.5" stroke-dasharray="3 4"/>
+        <text x="${w-padLeft}" y="${goalY-5}" text-anchor="end" font-size="10" fill="var(--moss)" font-family="'IBM Plex Mono'">Goal ${fmt(p.goalWeight,0)}</text>` : ''}
         <path d="${lineD}" fill="none" stroke="var(--line)" stroke-width="1.5"/>
         <line x1="${trendX1}" y1="${trendY1}" x2="${trendX2}" y2="${trendY2}" stroke="${color}" stroke-width="3" stroke-dasharray="5 5" stroke-linecap="round"/>
+        ${showProjection ? `<line x1="${mapX(n-1)}" y1="${mapY(logs[n-1].weight)}" x2="${projX}" y2="${goalY}" stroke="${color}" stroke-width="2" stroke-dasharray="1.5 3.5" stroke-linecap="round" opacity="0.55"/>
+        <text x="${projX}" y="${goalY-5}" text-anchor="end" font-size="10" fill="${color}" font-family="'IBM Plex Mono'" opacity="0.85">(projected)</text>` : ''}
         ${dots}
       </svg>
       <div id="trend-tip" class="mono" style="display:none; position:absolute; pointer-events:none; background:var(--pine-dark); color:#fff; font-size:11.5px; padding:5px 9px; border-radius:8px; white-space:nowrap; transform:translate(-50%,-115%); z-index:5;"></div>
@@ -2181,6 +2263,376 @@ function renderWeeklyInsight(){
   return `<div class="section-title">Weekly insight</div><div class="banner">📊 <div>${msg}</div></div>`;
 }
 
+// ---------------- weight trend & forecast ----------------
+// "What's happening" layer: pure calculation over weightLogs, no writes to state,
+// no influence on calorie/calibration math (computePhases/computeCalibration are
+// untouched by anything below — the trend system observes, the adaptive engine
+// decides). Confidence and the noise/extrapolation guards reuse the same
+// thresholds as estimateCompletion()/computeCalibration() rather than inventing
+// new ones — one definition of "enough data to trust a trend" across the app.
+//
+// Two DIFFERENT window-selection policies answer two different questions, and the
+// distinction is load-bearing — never collapse these into one generic "trend":
+//   currentTrend       "what's happening recently?" — prefers 14d, then 7d, then
+//                       30d. 14-day is the balance point between 7-day noise and
+//                       30-day staleness: hand-testing showed preferring the
+//                       longest window either badly understates a real recent
+//                       acceleration (e.g. 30d=-0.2/14d=-1.8/7d=-2.0) or falsely
+//                       papers over a recent stall (30d=-2.0/14d=-0.4/7d=+1.5).
+//   forecastBasisWindow "what rate is safe to extrapolate months out?" — prefers
+//                       30d, then 14d, then 7d, then gets clamped against the
+//                       all-time `overall` trend below.
+//   overall             full-history regression, intentionally ALL-TIME — not
+//                       scoped to the current profile/goal (same v1 boundary as
+//                       estimateCompletion()'s existing trackedDays gate). A user
+//                       who changed goals/regimes mid-history can see this produce
+//                       a 'conflicting' forecast rather than a falsely precise
+//                       date — the safe failure mode. This limitation belongs to
+//                       forecastBasisWindow's clamp specifically, not to
+//                       currentTrend, which the 14-day-preferred policy already
+//                       answers cleanly on its own.
+const PROGRESS_CHECK_TOLERANCE_RATIO = 0.35;
+const PROGRESS_CHECK_TOLERANCE_FLOOR = 0.3;
+// A single one-day outlier has outsized leverage on a short regression window (a
+// +9lb spike at the most recent point of a 7-day window can flip the slope from
+// -0.75 to +6 lb/week; the same spike mid-window barely moves it, since a point at
+// the window's mean x has ~zero leverage on slope by construction). Rather than
+// modify the regression or the data, flag it: when the raw 7-day rate diverges
+// sharply from the chosen currentTrend, say so — same reconciliation-note pattern
+// already shipped above in renderWeeklyInsight (Math.abs(rate-longTermRate)>2).
+const TREND_DIVERGENCE_THRESHOLD = 2;
+
+const WeightTrendEngine = {
+  analyze(weightLogs = state.weightLogs){
+    const windows = {
+      7: computeRecentTrend(7, weightLogs),
+      14: computeRecentTrend(14, weightLogs),
+      30: computeRecentTrend(30, weightLogs),
+    };
+    const overall = computeTrend(weightLogs);
+    const currentTrend = this.pickWindow(windows, [14,7,30]);
+    const forecastBasisWindow = this.pickWindow(windows, [30,14,7]);
+    const confidence = this.trendConfidence(weightLogs, overall);
+    const { forecastRatePerWeek, forecastStatus } = this.calculateForecastRate(forecastBasisWindow, overall, currentTrend, confidence);
+    const divergenceNote = this.divergenceNote(windows[7], currentTrend);
+    return { windows, overall, currentTrend, forecastBasisWindow, confidence, forecastRatePerWeek, forecastStatus, divergenceNote };
+  },
+
+  // First window in `order` that has enough data, tagged with which window it is.
+  pickWindow(windows, order){
+    for(const d of order){ if(windows[d]) return { windowDays:d, ...windows[d] }; }
+    return null;
+  },
+
+  trendConfidence(weightLogs, overall){
+    if(weightLogs.length < MIN_COMPLETION_POINTS || !overall) return 'insufficient';
+    const sorted = [...weightLogs].sort((a,b)=> new Date(a.date)-new Date(b.date));
+    const spanDays = (new Date(sorted[sorted.length-1].date) - new Date(sorted[0].date))/86400000;
+    if(spanDays < MIN_TREND_SPAN_DAYS) return 'insufficient';
+    return spanDays >= MIN_GOAL_TRACKING_DAYS ? 'established' : 'emerging';
+  },
+
+  // Always picks whichever of {forecast-basis window, full history} is SLOWER, in
+  // either direction — never lets a short hot streak overpromise, and never lets a
+  // stale historical average paper over a genuine recent slowdown. 'conflicting'
+  // (enough data, but the two disagree on direction) is reported distinctly from
+  // 'insufficient' (not enough data at all) since they need different copy.
+  //
+  // Conflict is checked against BOTH forecastBasisWindow and currentTrend, not just
+  // forecastBasisWindow — found by running this against a synthetic "old regime
+  // gaining, recent 10 days losing" dataset: forecastBasisWindow prefers the 30-day
+  // window, which can still be mostly the OLD regime and so happen to agree with
+  // `overall` by coincidence even while currentTrend (14-day) has already reversed.
+  // Checking currentTrend too catches a real recent reversal that a stable-looking
+  // longer window alone would miss.
+  calculateForecastRate(forecastBasisWindow, overall, currentTrend, confidence){
+    if(confidence==='insufficient' || !forecastBasisWindow || !overall){
+      return { forecastRatePerWeek:null, forecastStatus:'insufficient' };
+    }
+    const basis = forecastBasisWindow.slopePerWeek, hist = overall.slopePerWeek;
+    const recent = currentTrend ? currentTrend.slopePerWeek : basis;
+    if(Math.sign(basis) !== Math.sign(hist) || Math.sign(recent) !== Math.sign(hist)){
+      return { forecastRatePerWeek:null, forecastStatus:'conflicting' };
+    }
+    const mag = Math.min(Math.abs(basis), Math.abs(hist));
+    return { forecastRatePerWeek: mag * Math.sign(hist), forecastStatus:'ok' };
+  },
+
+  divergenceNote(window7, currentTrend){
+    if(!window7 || !currentTrend || currentTrend.windowDays===7) return null;
+    if(Math.abs(window7.slopePerWeek - currentTrend.slopePerWeek) <= TREND_DIVERGENCE_THRESHOLD) return null;
+    return `Your most recent week looks different from your ${currentTrend.windowDays}-day trend — a single unusual weigh-in can do this.`;
+  },
+
+  // Mirrors estimateCompletion()'s goal-date guard (isExtrapolationConfident) but
+  // driven by the clamped forecastRatePerWeek instead of a raw single-window slope,
+  // so there is exactly one "when will I hit my goal" figure app-wide. Callers are
+  // expected to skip calling this for maintain goals (goalWeight===startWeight
+  // makes "days to reach your maintain weight" meaningless) — see the goalType
+  // guard already applied at each of this function's call sites.
+  forecastGoal(profile, avgW, analysis){
+    if(isGoalReached()) return { status:'reached' };
+    if(analysis.forecastStatus==='insufficient') return { status:'insufficient' };
+    if(analysis.forecastStatus==='conflicting') return { status:'conflicting' };
+    const rate = analysis.forecastRatePerWeek;
+    if(getGoalProgressDirection(rate, profile.goalType) !== 'toward') return { status:'stalled' };
+
+    const dir = profile.goalWeight >= profile.startWeight ? 1 : -1;
+    const goalDistance = Math.max(0, dir>0 ? (profile.goalWeight-avgW) : (avgW-profile.goalWeight));
+    const goalDays = Math.round(goalDistance / (Math.abs(rate)/7));
+    const sorted = [...state.weightLogs].sort((a,b)=> new Date(a.date)-new Date(b.date));
+    const trackedDays = Math.round((new Date(sorted[sorted.length-1].date)-new Date(sorted[0].date))/86400000);
+    const confident = isExtrapolationConfident(trackedDays, goalDays);
+    const forecastDate = confident ? new Date(Date.now()+goalDays*86400000) : null;
+    return { status:'ok', goalDays, forecastDate, confident, trackedDays };
+  },
+
+  // Pure, no state dependency — per the spec's suggested API. planRatePerWeek and
+  // actualRatePerWeek must already be sign-normalized by the caller (positive =
+  // progress toward goal, via normalizeToGoalProgress) so this never needs to know
+  // loss/gain itself. Never returns a value that should trigger a calorie/
+  // calibration change on its own — informational only.
+  compareExpectedVsActual(planRatePerWeek, actualRatePerWeek){
+    if(Math.abs(actualRatePerWeek) < TREND_NOISE_EPSILON*7) return { status:'plateaued' };
+    if(actualRatePerWeek < 0) return { status:'reversing' };
+    const withinTolerance = Math.abs(actualRatePerWeek - planRatePerWeek) <= Math.max(Math.abs(planRatePerWeek) * PROGRESS_CHECK_TOLERANCE_RATIO, PROGRESS_CHECK_TOLERANCE_FLOOR);
+    if(withinTolerance) return { status:'on-pace' };
+    return actualRatePerWeek > planRatePerWeek
+      ? { status:'faster', diff: actualRatePerWeek-planRatePerWeek }
+      : { status:'slower', diff: planRatePerWeek-actualRatePerWeek };
+  },
+};
+
+// ---------------- weight trend & forecast: rendering ----------------
+// Calculation lives entirely in WeightTrendEngine above; everything below just
+// turns its output into markup, matching the app's existing calc/render split
+// (e.g. estimateCompletion() / renderEstimatedTimeline()). Each function derives
+// what it needs from state independently, same convention as the rest of the file.
+
+function isStaleLastLog(sortedDescLogs){
+  if(sortedDescLogs.length===0) return false;
+  const last = sortedDescLogs[0].date;
+  return last !== todayStr() && last !== dateKeyFor(new Date(Date.now()-86400000));
+}
+
+// Compact, cardless block for the always-visible dash-top tier (not the collapsed
+// Insights disclosure) — covers "trend rate" and "forecast" from the mobile
+// priority order without adding a second full card next to the milestone card
+// (deliberately not reopening the existing Dashboard hierarchy pass).
+function renderTrendStrip(){
+  const p = state.profile;
+  const goalType = p.goalType || 'loss';
+  const n = state.weightLogs.length;
+  if(n===0) return `<div class="helper">Start logging your weight to see your trend.</div>`;
+  if(n < MIN_COMPLETION_POINTS) return `<div class="helper">Keep logging your weight to establish a trend.</div>`;
+
+  const analysis = WeightTrendEngine.analyze();
+  if(analysis.confidence==='insufficient' || !analysis.currentTrend){
+    return `<div class="helper">Your trend will become more reliable after you've logged over a longer period.</div>`;
+  }
+
+  const { currentTrend } = analysis;
+  const magnitude = Math.abs(currentTrend.slopePerWeek);
+  const goingDown = currentTrend.slopePerWeek < -0.05, goingUp = currentTrend.slopePerWeek > 0.05;
+  const direction = getGoalProgressDirection(currentTrend.slopePerWeek, goalType);
+  const color = direction==='toward' ? 'var(--pine)' : direction==='away' ? 'var(--danger)' : 'var(--moss)';
+  const arrowGlyph = goingDown ? '&#8595;' : goingUp ? '&#8593;' : '&#8594;';
+  const rateText = (!goingDown && !goingUp) ? 'Roughly flat this stretch' : `Trending ${goingDown?'down':'up'}, about ${fmt(magnitude)} lbs/week`;
+
+  const sortedDesc = [...state.weightLogs].sort((a,b)=> new Date(b.date)-new Date(a.date));
+  const staleness = isStaleLastLog(sortedDesc) ? ` (as of ${prettyDate(sortedDesc[0].date)})` : '';
+
+  let sentence;
+  if(!goingDown && !goingUp) sentence = 'Your weight has been fairly steady lately.';
+  else if(direction==='toward') sentence = 'Your weight is trending toward your goal.';
+  else if(direction==='away') sentence = "Your weight is trending away from your goal right now — daily numbers bounce around, so we'll keep watching before flagging anything.";
+  else sentence = 'Your weight is holding close to your maintenance target.';
+
+  let teaser = '';
+  if(goalType!=='maintain'){
+    const forecast = WeightTrendEngine.forecastGoal(p, rollingAverageWeight(), analysis);
+    if(forecast.status==='ok' && forecast.confident){
+      teaser = ` Projected around ${prettyDateObj(forecast.forecastDate)}, using a conservative blend of your recent and longer-term trend.`;
+    } else if(forecast.status==='conflicting' && direction!=='away'){
+      // When direction is already 'away', the sentence above already communicates
+      // "hold on, we're watching" — appending this would just repeat that in
+      // different words rather than adding new information.
+      teaser = " Your trend looks like it's shifting — we'll keep watching before projecting a date.";
+    }
+  }
+
+  return `
+    <div class="trend-label">
+      <span class="trend-arrow" style="background:${color}22; color:${color};">${arrowGlyph}</span>
+      <span style="color:${color};">${rateText}${staleness}</span>
+    </div>
+    <div class="helper">${sentence}${teaser}</div>
+  `;
+}
+
+// Full 7/14/30-day breakdown + confidence, inside the Insights disclosure.
+function renderWeightTrendCard(){
+  const p = state.profile;
+  const goalType = p.goalType || 'loss';
+  const n = state.weightLogs.length;
+  if(n===0) return `<div class="empty-state">Start logging your weight to see your trend.</div>`;
+  if(n < MIN_COMPLETION_POINTS) return `<div class="empty-state">Keep logging your weight to establish a trend — a few more weigh-ins and this will fill in.</div>`;
+
+  const analysis = WeightTrendEngine.analyze();
+  const confidenceCopy = {
+    insufficient: { badge:'badge-upcoming', text:'Insufficient data', note:"Your trend will become more reliable after you've logged over a longer period." },
+    emerging: { badge:'badge-current', text:'Emerging trend', note:'Your trend is becoming clearer as you add more weigh-ins.' },
+    established: { badge:'badge-reached', text:'Established trend', note:'Your current trend is based on enough data to provide a useful estimate.' },
+  }[analysis.confidence];
+
+  const windowCell = (days)=>{
+    const win = analysis.windows[days];
+    if(!win) return `<div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">${days}-day</div><div class="mono" style="color:var(--moss); font-size:12.5px; margin-top:4px;">Not enough data</div></div>`;
+    const direction = getGoalProgressDirection(win.slopePerWeek, goalType);
+    const cellColor = direction==='toward' ? 'var(--pine)' : direction==='away' ? 'var(--danger)' : 'var(--moss)';
+    const arrow = win.slopePerWeek < -0.05 ? '&#8595;' : win.slopePerWeek > 0.05 ? '&#8593;' : '&#8594;';
+    return `<div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">${days}-day</div><div class="mono" style="color:${cellColor}; font-weight:600; margin-top:4px;">${arrow} ${fmt(Math.abs(win.slopePerWeek))}</div></div>`;
+  };
+
+  return `
+    <span class="badge ${confidenceCopy.badge}">${confidenceCopy.text}</span>
+    <div class="trend-window-grid">${windowCell(7)}${windowCell(14)}${windowCell(30)}</div>
+    <div class="helper" style="margin-top:10px;">${confidenceCopy.note}</div>
+    ${analysis.divergenceNote ? `<div class="helper">${analysis.divergenceNote}</div>` : ''}
+    <div class="helper" style="margin-top:6px;">These are full-regression trends over each window — Weekly insight and Rolling weight average below use simpler week-over-week comparisons for a quicker gut-check, so the numbers won't always match exactly.</div>
+  `;
+}
+
+// Sole home for "when will I reach my goal" — see renderEstimatedTimeline() earlier
+// in the file, which now only covers the near-term next-phase date.
+function renderGoalForecastCard(){
+  const p = state.profile;
+  const goalType = p.goalType || 'loss';
+  if(goalType==='maintain' || isGoalReached()) return '';
+  if(state.weightLogs.length < MIN_COMPLETION_POINTS) return '';
+
+  const analysis = WeightTrendEngine.analyze();
+  const avgW = rollingAverageWeight();
+  const forecast = WeightTrendEngine.forecastGoal(p, avgW, analysis);
+  const remaining = Math.abs(p.goalWeight - avgW);
+
+  let body;
+  if(forecast.status==='insufficient'){
+    body = `<div class="helper">Keep logging to build a reliable forecast.</div>`;
+  } else if(forecast.status==='conflicting'){
+    body = `<div class="helper">Your trend looks like it's shifting — we'll wait for it to settle before estimating a date.</div>`;
+  } else if(forecast.status==='stalled'){
+    body = `<div class="helper">Your recent trend isn't moving toward your goal yet, so we can't estimate a date.</div>`;
+  } else if(!forecast.confident){
+    body = `<div class="helper">Too early to project this far out reliably — keep logging and this will sharpen up.</div>`;
+  } else {
+    body = `
+      <div class="mono" style="font-weight:600; font-size:20px; margin-top:6px;">${prettyDateObj(forecast.forecastDate)}</div>
+      <div class="helper" style="margin-top:2px;">Estimated using a conservative blend of your recent and longer-term trend — about ${forecast.goalDays} day${forecast.goalDays===1?'':'s'}.</div>
+    `;
+  }
+
+  return `
+    <div class="section-title">Goal forecast</div>
+    <div class="card">
+      <div class="row2">
+        <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Goal</div><div class="mono" style="font-weight:600; margin-top:4px;">${fmt(p.goalWeight,0)} lbs</div></div>
+        <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Remaining</div><div class="mono" style="font-weight:600; margin-top:4px;">${fmt(remaining,1)} lbs</div></div>
+      </div>
+      ${body}
+      <div class="helper" style="margin-top:8px;">Projected, not promised — daily readings bounce around and this updates as you log more.</div>
+    </div>
+  `;
+}
+
+// Compares the calorie plan's implied weekly rate against the observed trend.
+// Informational only — never suggests changing calories itself (that stays the
+// job of the existing calibration/adaptive-phase engine, see computeCalibration()
+// and computePhases()); respects the same calibration safeguards untouched.
+function renderProgressCheckCard(){
+  const p = state.profile;
+  const goalType = p.goalType || 'loss';
+  if(goalType==='maintain' || isGoalReached()) return '';
+  if(state.weightLogs.length < MIN_COMPLETION_POINTS) return '';
+
+  const analysis = WeightTrendEngine.analyze();
+  if(analysis.confidence==='insufficient' || !analysis.currentTrend) return '';
+
+  const phases = computePhases(p);
+  const avgW = rollingAverageWeight();
+  const active = getActivePhase(phases, avgW);
+  const planRatePerWeek = taperedAdjustment(p, active.weightTarget) / CAL_PER_LB * 7;
+  const actualRatePerWeek = normalizeToGoalProgress(analysis.currentTrend.slopePerWeek, goalType);
+  const check = WeightTrendEngine.compareExpectedVsActual(planRatePerWeek, actualRatePerWeek);
+
+  const verb = goalType==='gain' ? 'gaining' : 'losing';
+  const statusCopy = {
+    'on-pace': "You're right around your planned pace.",
+    'faster': `You're currently ${verb} a bit faster than planned. We'll keep monitoring your trend before recommending a change.`,
+    'slower': `Your recent progress has slowed a bit. We'll keep monitoring your trend before recommending a change.`,
+    'plateaued': `Your weight hasn't moved much lately. That's normal short-term — keep logging and we'll watch the trend.`,
+    'reversing': `Your recent trend has moved the other way. Daily numbers bounce around, so we'll keep watching before flagging anything.`,
+  };
+
+  return `
+    <div class="section-title">Progress check</div>
+    <div class="card">
+      <div class="row2">
+        <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Plan</div><div class="mono" style="font-weight:600; margin-top:4px;">${fmt(planRatePerWeek)} lbs/week</div></div>
+        <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Actual trend</div><div class="mono" style="font-weight:600; margin-top:4px;">${fmt(Math.abs(actualRatePerWeek))} lbs/week</div></div>
+      </div>
+      <div class="helper" style="margin-top:10px;">${statusCopy[check.status]}</div>
+      <div class="helper" style="margin-top:4px;">This is informational — we won't change your calorie target from this alone.</div>
+    </div>
+  `;
+}
+
+// Preserves the historical fact that an earlier goal was reached when the user
+// changes their goal weight, so extending (or even retreating from) a goal never
+// erases a milestone already hit. The only thing that matters is whether the OLD
+// goal was reached — the new goal's direction is irrelevant (e.g. someone who hit
+// 220 and then raises their goal back to 250 should still keep credit for 220).
+function recordGoalMilestone(oldProfile, newGoalWeight){
+  if(!oldProfile) return;
+  if((oldProfile.goalType||'loss')==='maintain') return; // nothing meaningful to preserve
+  if(newGoalWeight === oldProfile.goalWeight) return;     // goal unchanged (e.g. unrelated settings edit)
+  if(!isGoalReached()) return;                            // reads state.profile — still the OLD profile here
+  if(state.milestones.some(m=> m.weight===oldProfile.goalWeight)) return; // dedup (e.g. 280->220->280->220)
+  state.milestones.push({ weight: oldProfile.goalWeight, reachedDate: todayStr() });
+}
+
+// A coarse, milestone-level view of the journey — start, past reached goals, "you
+// are here," and the current goal — distinct from the fine-grained phase list
+// below (every `interval` lbs), not a duplicate of it. reachedDate is realistically
+// the date the goal was CHANGED, not necessarily the exact date first crossed
+// (there's no historical point-in-time rolling average to compute that precisely)
+// — so it's stored but deliberately not shown here, to avoid implying false
+// precision about *when*.
+function renderMilestoneBreadcrumb(){
+  const p = state.profile;
+  if(state.milestones.length===0) return '';
+  const dir = p.goalWeight >= p.startWeight ? 1 : -1;
+  const sortedMilestones = [...state.milestones].sort((a,b)=> dir>0 ? a.weight-b.weight : b.weight-a.weight);
+  const avgW = rollingAverageWeight();
+  const stops = [
+    { label: `${fmt(p.startWeight,0)} lbs`, sub: 'Starting point', kind:'reached' },
+    ...sortedMilestones.map(m=> ({ label: `${fmt(m.weight,0)} lbs`, sub: 'Reached', kind:'reached' })),
+    { label: `${fmt(avgW,0)} lbs`, sub: 'You are here', kind:'current' },
+    { label: `${fmt(p.goalWeight,0)} lbs`, sub: 'Current goal', kind:'upcoming' },
+  ];
+  return `
+    <div class="section-title">Journey milestones</div>
+    <div class="milestone-breadcrumb">
+      ${stops.map(s=> `
+        <div class="breadcrumb-stop">
+          <div class="breadcrumb-dot ${s.kind==='reached'?'reached':s.kind==='current'?'current':''}"></div>
+          <div class="breadcrumb-label"><strong>${s.label}</strong> ${s.sub}</div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
 // ---------------- roadmap tab ----------------
 function renderRoadmap(){
   const p = state.profile;
@@ -2197,6 +2649,7 @@ function renderRoadmap(){
     <h1 class="page-title">Roadmap</h1>
     <p class="page-sub">${phases.length} phases from ${fmt(p.startWeight,0)} to ${fmt(p.goalWeight,0)} lbs, stepping every ${p.interval} lbs. Progress is based on your ${Math.min(state.weightLogs.length, ROLLING_WINDOW)}-log rolling average of ${fmt(avgW)} lbs.</p>
     ${notes.length ? `<div class="banner" style="margin-bottom:16px;">📐 <div>${notes.join('; ')}.</div></div>` : ''}
+    ${renderMilestoneBreadcrumb()}
     <div class="stack">
       ${phases.map(ph=>{
         const reached = dir>0 ? avgW >= ph.weightTarget : avgW <= ph.weightTarget;
@@ -3311,6 +3764,11 @@ function renderSettings(){
     }
     err.style.display='none';
 
+    // must run before state.profile is overwritten below — isGoalReached() reads
+    // state.profile directly, so it only evaluates the OLD goal because this call
+    // happens first (synchronously, no await in between).
+    recordGoalMilestone(state.profile, v.goalWeight);
+
     state.profile = {
       ...state.profile,
       name, startWeight:v.startWeight, goalWeight:v.goalWeight,
@@ -3338,7 +3796,7 @@ function renderSettings(){
 
   document.getElementById('btn-reset').onclick = async ()=>{
     if(!confirm('This will erase your profile and weight history from this device. Continue?')) return;
-    state = { profile:null, weightLogs:[], nutritionLogs:[], ackPhaseId:null };
+    state = { profile:null, weightLogs:[], nutritionLogs:[], ackPhaseId:null, milestones:[] };
     await saveState();
     boot();
   };
