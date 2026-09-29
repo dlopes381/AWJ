@@ -466,21 +466,52 @@ const MALE_SIZE_TABLE = [
 
 // Female weight-to-clothing-size reference table, built from Charles River Apparel's
 // Women's Pants (waist/hip -> CRA size) and Women's Shirt (chest -> CRA size) charts.
-// Waist/hip ranges and CRA size labels are the chart's real measurement data. That
-// chart is measurement-based, not weight-based, so the `weight` anchors here are an
+// The chart itself only defines 7 CRA size tiers (XS-2XL, plus 3XL from the shirt
+// chart alone); those 7 rows' waist/hip ranges and CRA labels are the chart's real
+// measurement data, at 115-260 lbs weight anchors that are themselves an
 // approximation (standard women's size-to-weight correlation used by apparel
-// retailers), not a personal measurement like the male table above — same
-// "estimate, not a substitute for actual measurements" caveat applies, more so.
-// The 3XL row has no pants entry in the source chart (only a shirt chest range),
-// so its waist/hip are extrapolated from the preceding rows' per-tier deltas.
+// retailers, not a personal measurement like the male table above — see comment
+// there). This table breaks that 7-tier chart down to 5lb increments for more
+// granular tracking: waist/hip are linearly interpolated between the two nearest
+// of the original 7 tiers (same math `estimateSizeForWeight` already applies at
+// render time — this just bakes it in at a finer resolution so the Settings
+// reference table itself shows more rows); pants/shirt take whichever of the 7
+// tiers is nearest by weight, with an exact-midpoint tie (e.g. 140 lbs, exactly
+// between the S and M anchors) resolved to the larger size. The 3XL rows (245+)
+// have no pants entry in the source chart, so their waist/hip continue the same
+// interpolation using the extrapolated 2XL/3XL-boundary values (see the 7-tier
+// comment above) rather than new source data.
 const FEMALE_SIZE_TABLE = [
-  {weight:115, waistLow:24, waistHigh:25, hipLow:35, hipHigh:36, pants:'XS (2/4)',  shirt:'XS'},
-  {weight:130, waistLow:26, waistHigh:27, hipLow:37, hipHigh:38, pants:'S (6/8)',   shirt:'S'},
-  {weight:150, waistLow:28, waistHigh:29, hipLow:39, hipHigh:40, pants:'M (10/12)', shirt:'M'},
-  {weight:170, waistLow:30, waistHigh:33, hipLow:41, hipHigh:43, pants:'L (14/16)', shirt:'L'},
-  {weight:195, waistLow:34, waistHigh:36, hipLow:44, hipHigh:47, pants:'XL (18/20)', shirt:'XL'},
-  {weight:225, waistLow:37, waistHigh:40, hipLow:48, hipHigh:51, pants:'2XL (22/24)', shirt:'2XL'},
-  {weight:260, waistLow:40, waistHigh:43, hipLow:51, hipHigh:54, pants:'2XL (22/24)+', shirt:'3XL'},
+  {weight:115, waistLow:24,   waistHigh:25,   hipLow:35,   hipHigh:36,   pants:'XS (2/4)',     shirt:'XS'},
+  {weight:120, waistLow:24.7, waistHigh:25.7, hipLow:35.7, hipHigh:36.7, pants:'XS (2/4)',     shirt:'XS'},
+  {weight:125, waistLow:25.3, waistHigh:26.3, hipLow:36.3, hipHigh:37.3, pants:'S (6/8)',      shirt:'S'},
+  {weight:130, waistLow:26,   waistHigh:27,   hipLow:37,   hipHigh:38,   pants:'S (6/8)',      shirt:'S'},
+  {weight:135, waistLow:26.5, waistHigh:27.5, hipLow:37.5, hipHigh:38.5, pants:'S (6/8)',      shirt:'S'},
+  {weight:140, waistLow:27,   waistHigh:28,   hipLow:38,   hipHigh:39,   pants:'M (10/12)',    shirt:'M'},
+  {weight:145, waistLow:27.5, waistHigh:28.5, hipLow:38.5, hipHigh:39.5, pants:'M (10/12)',    shirt:'M'},
+  {weight:150, waistLow:28,   waistHigh:29,   hipLow:39,   hipHigh:40,   pants:'M (10/12)',    shirt:'M'},
+  {weight:155, waistLow:28.5, waistHigh:30,   hipLow:39.5, hipHigh:40.8, pants:'M (10/12)',    shirt:'M'},
+  {weight:160, waistLow:29,   waistHigh:31,   hipLow:40,   hipHigh:41.5, pants:'L (14/16)',    shirt:'L'},
+  {weight:165, waistLow:29.5, waistHigh:32,   hipLow:40.5, hipHigh:42.2, pants:'L (14/16)',    shirt:'L'},
+  {weight:170, waistLow:30,   waistHigh:33,   hipLow:41,   hipHigh:43,   pants:'L (14/16)',    shirt:'L'},
+  {weight:175, waistLow:30.8, waistHigh:33.6, hipLow:41.6, hipHigh:43.8, pants:'L (14/16)',    shirt:'L'},
+  {weight:180, waistLow:31.6, waistHigh:34.2, hipLow:42.2, hipHigh:44.6, pants:'L (14/16)',    shirt:'L'},
+  {weight:185, waistLow:32.4, waistHigh:34.8, hipLow:42.8, hipHigh:45.4, pants:'XL (18/20)',   shirt:'XL'},
+  {weight:190, waistLow:33.2, waistHigh:35.4, hipLow:43.4, hipHigh:46.2, pants:'XL (18/20)',   shirt:'XL'},
+  {weight:195, waistLow:34,   waistHigh:36,   hipLow:44,   hipHigh:47,   pants:'XL (18/20)',   shirt:'XL'},
+  {weight:200, waistLow:34.5, waistHigh:36.7, hipLow:44.7, hipHigh:47.7, pants:'XL (18/20)',   shirt:'XL'},
+  {weight:205, waistLow:35,   waistHigh:37.3, hipLow:45.3, hipHigh:48.3, pants:'XL (18/20)',   shirt:'XL'},
+  {weight:210, waistLow:35.5, waistHigh:38,   hipLow:46,   hipHigh:49,   pants:'2XL (22/24)',  shirt:'2XL'},
+  {weight:215, waistLow:36,   waistHigh:38.7, hipLow:46.7, hipHigh:49.7, pants:'2XL (22/24)',  shirt:'2XL'},
+  {weight:220, waistLow:36.5, waistHigh:39.3, hipLow:47.3, hipHigh:50.3, pants:'2XL (22/24)',  shirt:'2XL'},
+  {weight:225, waistLow:37,   waistHigh:40,   hipLow:48,   hipHigh:51,   pants:'2XL (22/24)',  shirt:'2XL'},
+  {weight:230, waistLow:37.4, waistHigh:40.4, hipLow:48.4, hipHigh:51.4, pants:'2XL (22/24)',  shirt:'2XL'},
+  {weight:235, waistLow:37.9, waistHigh:40.9, hipLow:48.9, hipHigh:51.9, pants:'2XL (22/24)',  shirt:'2XL'},
+  {weight:240, waistLow:38.3, waistHigh:41.3, hipLow:49.3, hipHigh:52.3, pants:'2XL (22/24)',  shirt:'2XL'},
+  {weight:245, waistLow:38.7, waistHigh:41.7, hipLow:49.7, hipHigh:52.7, pants:'2XL (22/24)+', shirt:'3XL'},
+  {weight:250, waistLow:39.1, waistHigh:42.1, hipLow:50.1, hipHigh:53.1, pants:'2XL (22/24)+', shirt:'3XL'},
+  {weight:255, waistLow:39.6, waistHigh:42.6, hipLow:50.6, hipHigh:53.6, pants:'2XL (22/24)+', shirt:'3XL'},
+  {weight:260, waistLow:40,   waistHigh:43,   hipLow:51,   hipHigh:54,   pants:'2XL (22/24)+', shirt:'3XL'},
 ];
 
 const SIZE_TABLES = { male: MALE_SIZE_TABLE, female: FEMALE_SIZE_TABLE };
