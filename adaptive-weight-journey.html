@@ -444,9 +444,11 @@ const DATE_FILTERS = [
   {val:'allTime', label:'All Time'},
 ];
 
-// Personal weight-to-clothing-size reference table (190-310 lbs, 10lb steps).
-// Waist/pants are numeric ranges (interpolated); shirt is categorical (nearest row).
-const SIZE_TABLE = [
+// Personal male weight-to-clothing-size reference table (190-310 lbs, 10lb steps),
+// from real measurements. Waist/pants are numeric ranges (interpolated); shirt is
+// categorical (nearest row), using men's CRA size tiers (S-5XL per Charles River
+// Apparel's size chart).
+const MALE_SIZE_TABLE = [
   {weight:190, waistLow:35,   waistHigh:36.5, pantsLow:33, pantsHigh:36, shirt:'L–XL'},
   {weight:200, waistLow:36,   waistHigh:38,   pantsLow:35, pantsHigh:37, shirt:'L–XL'},
   {weight:210, waistLow:37.5, waistHigh:39,   pantsLow:36, pantsHigh:38, shirt:'XL–2XL'},
@@ -461,6 +463,27 @@ const SIZE_TABLE = [
   {weight:300, waistLow:50.5, waistHigh:51.5, pantsLow:44, pantsHigh:46, shirt:'3XL (slightly looser)'},
   {weight:310, waistLow:51,   waistHigh:52,   pantsLow:44, pantsHigh:46, shirt:'3XL'},
 ];
+
+// Female weight-to-clothing-size reference table, built from Charles River Apparel's
+// Women's Pants (waist/hip -> CRA size) and Women's Shirt (chest -> CRA size) charts.
+// Waist/hip ranges and CRA size labels are the chart's real measurement data. That
+// chart is measurement-based, not weight-based, so the `weight` anchors here are an
+// approximation (standard women's size-to-weight correlation used by apparel
+// retailers), not a personal measurement like the male table above — same
+// "estimate, not a substitute for actual measurements" caveat applies, more so.
+// The 3XL row has no pants entry in the source chart (only a shirt chest range),
+// so its waist/hip are extrapolated from the preceding rows' per-tier deltas.
+const FEMALE_SIZE_TABLE = [
+  {weight:115, waistLow:24, waistHigh:25, hipLow:35, hipHigh:36, pants:'XS (2/4)',  shirt:'XS'},
+  {weight:130, waistLow:26, waistHigh:27, hipLow:37, hipHigh:38, pants:'S (6/8)',   shirt:'S'},
+  {weight:150, waistLow:28, waistHigh:29, hipLow:39, hipHigh:40, pants:'M (10/12)', shirt:'M'},
+  {weight:170, waistLow:30, waistHigh:33, hipLow:41, hipHigh:43, pants:'L (14/16)', shirt:'L'},
+  {weight:195, waistLow:34, waistHigh:36, hipLow:44, hipHigh:47, pants:'XL (18/20)', shirt:'XL'},
+  {weight:225, waistLow:37, waistHigh:40, hipLow:48, hipHigh:51, pants:'2XL (22/24)', shirt:'2XL'},
+  {weight:260, waistLow:40, waistHigh:43, hipLow:51, hipHigh:54, pants:'2XL (22/24)+', shirt:'3XL'},
+];
+
+const SIZE_TABLES = { male: MALE_SIZE_TABLE, female: FEMALE_SIZE_TABLE };
 const SIZE_ESTIMATE_DISCLAIMER = 'Estimated from a personal reference table (weight-to-size), not a substitute for actual measurements.';
 
 // ---------------- persistence ----------------
@@ -733,12 +756,14 @@ function computePhases(p){
   }));
 }
 
-// Maps a weight to an estimated waist/pants/shirt size using SIZE_TABLE.
-// Waist/pants are numeric ranges, interpolated (or extrapolated past the
-// table's 190-310 ends using the slope of the nearest two rows). Shirt size
-// is categorical, so it snaps to the closest-by-weight row instead.
-function estimateSizeForWeight(w){
-  const t = SIZE_TABLE;
+// Maps a weight to an estimated size using the SIZE_TABLES entry for the given
+// sex ('male'/'female', falls back to 'male'). Waist (and, for female, hip) are
+// numeric ranges, interpolated (or extrapolated past the table's ends using the
+// slope of the nearest two rows). Pants/shirt category snaps to the closest-by-
+// weight row instead of interpolating: numeric for male (matches men's pant
+// sizing), a CRA size label for female (matches the women's pants/shirt charts).
+function estimateSizeForWeight(w, sex){
+  const t = SIZE_TABLES[sex] || SIZE_TABLES.male;
   let lo, hi;
   if(w <= t[0].weight){ lo = t[0]; hi = t[1]; }
   else if(w >= t[t.length-1].weight){ lo = t[t.length-2]; hi = t[t.length-1]; }
@@ -751,10 +776,20 @@ function estimateSizeForWeight(w){
   const lerp = (a,b)=> a + (b-a)*frac;
   const waistLow = lerp(lo.waistLow, hi.waistLow);
   const waistHigh = lerp(lo.waistHigh, hi.waistHigh);
-  const pantsLow = lerp(lo.pantsLow, hi.pantsLow);
-  const pantsHigh = lerp(lo.pantsHigh, hi.pantsHigh);
   const nearestRow = t.reduce((a,b)=> Math.abs(b.weight-w) < Math.abs(a.weight-w) ? b : a);
   const fmtRange = (a,b)=> Math.abs(a-b) < 0.05 ? fmt(a,1) : `${fmt(a,1)}–${fmt(b,1)}`;
+  if(sex === 'female'){
+    const hipLow = lerp(lo.hipLow, hi.hipLow);
+    const hipHigh = lerp(lo.hipHigh, hi.hipHigh);
+    return {
+      waist: `${fmtRange(waistLow, waistHigh)}"`,
+      hip: `${fmtRange(hipLow, hipHigh)}"`,
+      pants: nearestRow.pants,
+      shirt: nearestRow.shirt
+    };
+  }
+  const pantsLow = lerp(lo.pantsLow, hi.pantsLow);
+  const pantsHigh = lerp(lo.pantsHigh, hi.pantsHigh);
   return {
     waist: `${fmtRange(waistLow, waistHigh)}"`,
     pants: fmtRange(pantsLow, pantsHigh),
@@ -762,9 +797,9 @@ function estimateSizeForWeight(w){
   };
 }
 
-function renderSizeEstimateCard(currentW, goalW){
-  const cur = estimateSizeForWeight(currentW);
-  const goal = estimateSizeForWeight(goalW);
+function renderSizeEstimateCard(currentW, goalW, sex){
+  const cur = estimateSizeForWeight(currentW, sex);
+  const goal = estimateSizeForWeight(goalW, sex);
   return `
     <div class="section-title">Estimated size</div>
     <div class="card">
@@ -772,12 +807,14 @@ function renderSizeEstimateCard(currentW, goalW){
         <div>
           <div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">At ${fmt(currentW,0)} lbs (now)</div>
           <div class="mono" style="margin-top:4px;">Waist ${cur.waist}</div>
+          ${cur.hip ? `<div class="mono">Hip ${cur.hip}</div>` : ''}
           <div class="mono">Pants ${cur.pants}</div>
           <div class="mono">Shirt ${cur.shirt}</div>
         </div>
         <div>
           <div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">At ${fmt(goalW,0)} lbs (goal)</div>
           <div class="mono" style="margin-top:4px;">Waist ${goal.waist}</div>
+          ${goal.hip ? `<div class="mono">Hip ${goal.hip}</div>` : ''}
           <div class="mono">Pants ${goal.pants}</div>
           <div class="mono">Shirt ${goal.shirt}</div>
         </div>
@@ -1611,7 +1648,7 @@ function renderDashboard(){
         <div class="card trail-wrap">${renderTrailSVG(phases, avgW)}</div>
         <div class="helper" style="margin-top:8px;">Each dot marks a calorie-target phase from ${fmt(p.startWeight,0)} to ${fmt(p.goalWeight,0)} lbs — filled pine dots are reached, gold is your current step.</div>
 
-        ${renderSizeEstimateCard(avgW, p.goalWeight)}
+        ${renderSizeEstimateCard(avgW, p.goalWeight, p.sex)}
 
         <div class="section-title">Rolling weight average <span style="font-weight:400; color:var(--moss); font-size:12px;">the trend that matters most</span></div>
         <div class="card">${renderRollingWeightChart()}</div>
@@ -2657,7 +2694,7 @@ function renderRoadmap(){
         const badge = isActive? '<span class="badge badge-current">Current</span>' : reached? '<span class="badge badge-reached">Reached</span>' : '<span class="badge badge-upcoming">Upcoming</span>';
         const dotColor = isActive? 'var(--gold)' : reached? 'var(--pine)' : 'var(--line)';
         const rowClass = isActive? 'phase-row phase-current' : reached? 'phase-row phase-completed' : 'phase-row phase-upcoming';
-        const size = estimateSizeForWeight(ph.weightTarget);
+        const size = estimateSizeForWeight(ph.weightTarget, p.sex);
         return `<div class="${rowClass}">
           <div class="phase-left">
             <div class="phase-dot" style="background:${dotColor};"></div>
@@ -3665,27 +3702,36 @@ function renderSettings(){
 
     <div class="section-title">Clothing size reference</div>
     <div class="card">
+      ${(()=>{
+        const isFemale = p.sex === 'female';
+        const sizeTable = SIZE_TABLES[p.sex] || SIZE_TABLES.male;
+        const rangeOrDash = (a,b)=> a===b ? fmt(a,1) : `${fmt(a,1)}–${fmt(b,1)}`;
+        return `
       <table style="width:100%; border-collapse:collapse; font-size:13px;">
         <thead>
           <tr style="text-align:left; color:var(--moss); font-size:11px; text-transform:uppercase;">
             <th style="padding:4px 6px 8px 0;">Weight</th>
             <th style="padding:4px 6px 8px;">Waist</th>
+            ${isFemale ? '<th style="padding:4px 6px 8px;">Hip</th>' : ''}
             <th style="padding:4px 6px 8px;">Pants</th>
             <th style="padding:4px 0 8px 6px;">Shirt</th>
           </tr>
         </thead>
         <tbody>
-          ${SIZE_TABLE.map(row=>`
+          ${sizeTable.map(row=>`
             <tr class="mono" style="border-top:1px solid var(--line);">
               <td style="padding:6px 6px 6px 0;">${row.weight} lbs</td>
-              <td style="padding:6px;">${row.waistLow===row.waistHigh?fmt(row.waistLow,1):`${fmt(row.waistLow,1)}–${fmt(row.waistHigh,1)}`}"</td>
-              <td style="padding:6px;">${row.pantsLow===row.pantsHigh?fmt(row.pantsLow,1):`${fmt(row.pantsLow,1)}–${fmt(row.pantsHigh,1)}`}</td>
+              <td style="padding:6px;">${rangeOrDash(row.waistLow, row.waistHigh)}"</td>
+              ${isFemale ? `<td style="padding:6px;">${rangeOrDash(row.hipLow, row.hipHigh)}"</td>` : ''}
+              <td style="padding:6px;">${isFemale ? row.pants : rangeOrDash(row.pantsLow, row.pantsHigh)}</td>
               <td style="padding:6px 0 6px 6px;">${row.shirt}</td>
             </tr>
           `).join('')}
         </tbody>
       </table>
-      <div class="helper" style="margin-top:10px;">${SIZE_ESTIMATE_DISCLAIMER}</div>
+      <div class="helper" style="margin-top:10px;">${SIZE_ESTIMATE_DISCLAIMER}${isFemale ? ' Weight anchors for this table are an industry-standard size correlation, not a personal measurement — treat them as rougher than the reference itself.' : ''}</div>
+        `;
+      })()}
     </div>
 
     <div class="section-title">Data</div>
