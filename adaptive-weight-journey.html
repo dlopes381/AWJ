@@ -50,8 +50,12 @@
      the number awkwardly. The range text itself already uses a non-breaking
      space + en dash (see fmtRange/rangeOrDash); nowrap is the belt-and-suspenders. */
   .measure{white-space:nowrap; font-variant-numeric:tabular-nums;}
-  @media (max-width:380px){
-    .size-split{grid-template-columns:1fr; gap:14px;}
+  /* Grid children default to a min-width that fits their nowrap content, which
+     lets wide measurement text (e.g. "28.6 – 30.2"") push past the card edge
+     on narrow screens instead of shrinking with the column. */
+  .size-split > div{min-width:0;}
+  @media (max-width:430px){
+    .row2.size-split{grid-template-columns:1fr; gap:14px;}
     .size-split .measure{font-size:13px;}
   }
   .display{font-family:'Space Grotesk', sans-serif;}
