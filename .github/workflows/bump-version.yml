@@ -1,0 +1,33 @@
+name: Bump app version
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  bump:
+    if: github.event.head_commit.author.name != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set APP_VERSION from commit count
+        run: |
+          count=$(git rev-list --count HEAD)
+          version="1.0.$count"
+          sed -i "s/const APP_VERSION = '[^']*';/const APP_VERSION = '$version';/" adaptive-weight-journey.html
+
+      - name: Commit version bump
+        run: |
+          if git diff --quiet; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add adaptive-weight-journey.html
+          git commit -m "Bump app version [skip ci]"
+          git push
