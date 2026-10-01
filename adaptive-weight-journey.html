@@ -1563,7 +1563,8 @@ function renderDashboard(){
   const milestonePct = goalDone ? 100 : Math.max(0, Math.min(100, (segmentProgressed/segmentTotal)*100));
 
   const el = document.getElementById('view-dashboard');
-  const insightsWasOpen = document.getElementById('dash-insights')?.open;
+  const existingInsights = document.getElementById('dash-insights');
+  const insightsWasOpen = existingInsights ? existingInsights.open : true;
   el.innerHTML = `
     <div class="dash-top">
       <div class="hero-card">
