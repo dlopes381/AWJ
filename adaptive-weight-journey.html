@@ -45,6 +45,15 @@
     overscroll-behavior-y: contain;
   }
   .mono{font-family:'IBM Plex Mono', monospace;}
+  /* Numeric measurement ranges (e.g. "48.6 – 49.9"") must never wrap mid-value —
+     on narrow screens a plain hyphen/space is a valid break point, which splits
+     the number awkwardly. The range text itself already uses a non-breaking
+     space + en dash (see fmtRange/rangeOrDash); nowrap is the belt-and-suspenders. */
+  .measure{white-space:nowrap; font-variant-numeric:tabular-nums;}
+  @media (max-width:380px){
+    .size-split{grid-template-columns:1fr; gap:14px;}
+    .size-split .measure{font-size:13px;}
+  }
   .display{font-family:'Space Grotesk', sans-serif;}
   #app{
     max-width:480px;
@@ -481,37 +490,42 @@ const MALE_SIZE_TABLE = [
 // have no pants entry in the source chart, so their waist/hip continue the same
 // interpolation using the extrapolated 2XL/3XL-boundary values (see the 7-tier
 // comment above) rather than new source data.
+// NOTE (fixed): the numeric sub-sizes in parentheses (e.g. "M (10/12)") were
+// originally the CRA chart's UK numbering, mislabeled as if they were US sizes —
+// confirmed against a separate US/UK women's size chart (US size = UK size - 4,
+// consistently across XS-5XL). Relabeled below to the true US pants numbers
+// (e.g. US M = 6/8, not 10/12) so they match real US retail sizing.
 const FEMALE_SIZE_TABLE = [
-  {weight:115, waistLow:24,   waistHigh:25,   hipLow:35,   hipHigh:36,   pants:'XS (2/4)',     shirt:'XS'},
-  {weight:120, waistLow:24.7, waistHigh:25.7, hipLow:35.7, hipHigh:36.7, pants:'XS (2/4)',     shirt:'XS'},
-  {weight:125, waistLow:25.3, waistHigh:26.3, hipLow:36.3, hipHigh:37.3, pants:'S (6/8)',      shirt:'S'},
-  {weight:130, waistLow:26,   waistHigh:27,   hipLow:37,   hipHigh:38,   pants:'S (6/8)',      shirt:'S'},
-  {weight:135, waistLow:26.5, waistHigh:27.5, hipLow:37.5, hipHigh:38.5, pants:'S (6/8)',      shirt:'S'},
-  {weight:140, waistLow:27,   waistHigh:28,   hipLow:38,   hipHigh:39,   pants:'M (10/12)',    shirt:'M'},
-  {weight:145, waistLow:27.5, waistHigh:28.5, hipLow:38.5, hipHigh:39.5, pants:'M (10/12)',    shirt:'M'},
-  {weight:150, waistLow:28,   waistHigh:29,   hipLow:39,   hipHigh:40,   pants:'M (10/12)',    shirt:'M'},
-  {weight:155, waistLow:28.5, waistHigh:30,   hipLow:39.5, hipHigh:40.8, pants:'M (10/12)',    shirt:'M'},
-  {weight:160, waistLow:29,   waistHigh:31,   hipLow:40,   hipHigh:41.5, pants:'L (14/16)',    shirt:'L'},
-  {weight:165, waistLow:29.5, waistHigh:32,   hipLow:40.5, hipHigh:42.2, pants:'L (14/16)',    shirt:'L'},
-  {weight:170, waistLow:30,   waistHigh:33,   hipLow:41,   hipHigh:43,   pants:'L (14/16)',    shirt:'L'},
-  {weight:175, waistLow:30.8, waistHigh:33.6, hipLow:41.6, hipHigh:43.8, pants:'L (14/16)',    shirt:'L'},
-  {weight:180, waistLow:31.6, waistHigh:34.2, hipLow:42.2, hipHigh:44.6, pants:'L (14/16)',    shirt:'L'},
-  {weight:185, waistLow:32.4, waistHigh:34.8, hipLow:42.8, hipHigh:45.4, pants:'XL (18/20)',   shirt:'XL'},
-  {weight:190, waistLow:33.2, waistHigh:35.4, hipLow:43.4, hipHigh:46.2, pants:'XL (18/20)',   shirt:'XL'},
-  {weight:195, waistLow:34,   waistHigh:36,   hipLow:44,   hipHigh:47,   pants:'XL (18/20)',   shirt:'XL'},
-  {weight:200, waistLow:34.5, waistHigh:36.7, hipLow:44.7, hipHigh:47.7, pants:'XL (18/20)',   shirt:'XL'},
-  {weight:205, waistLow:35,   waistHigh:37.3, hipLow:45.3, hipHigh:48.3, pants:'XL (18/20)',   shirt:'XL'},
-  {weight:210, waistLow:35.5, waistHigh:38,   hipLow:46,   hipHigh:49,   pants:'2XL (22/24)',  shirt:'2XL'},
-  {weight:215, waistLow:36,   waistHigh:38.7, hipLow:46.7, hipHigh:49.7, pants:'2XL (22/24)',  shirt:'2XL'},
-  {weight:220, waistLow:36.5, waistHigh:39.3, hipLow:47.3, hipHigh:50.3, pants:'2XL (22/24)',  shirt:'2XL'},
-  {weight:225, waistLow:37,   waistHigh:40,   hipLow:48,   hipHigh:51,   pants:'2XL (22/24)',  shirt:'2XL'},
-  {weight:230, waistLow:37.4, waistHigh:40.4, hipLow:48.4, hipHigh:51.4, pants:'2XL (22/24)',  shirt:'2XL'},
-  {weight:235, waistLow:37.9, waistHigh:40.9, hipLow:48.9, hipHigh:51.9, pants:'2XL (22/24)',  shirt:'2XL'},
-  {weight:240, waistLow:38.3, waistHigh:41.3, hipLow:49.3, hipHigh:52.3, pants:'2XL (22/24)',  shirt:'2XL'},
-  {weight:245, waistLow:38.7, waistHigh:41.7, hipLow:49.7, hipHigh:52.7, pants:'2XL (22/24)+', shirt:'3XL'},
-  {weight:250, waistLow:39.1, waistHigh:42.1, hipLow:50.1, hipHigh:53.1, pants:'2XL (22/24)+', shirt:'3XL'},
-  {weight:255, waistLow:39.6, waistHigh:42.6, hipLow:50.6, hipHigh:53.6, pants:'2XL (22/24)+', shirt:'3XL'},
-  {weight:260, waistLow:40,   waistHigh:43,   hipLow:51,   hipHigh:54,   pants:'2XL (22/24)+', shirt:'3XL'},
+  {weight:115, waistLow:24,   waistHigh:25,   hipLow:35,   hipHigh:36,   pants:'XS (0)',       shirt:'XS'},
+  {weight:120, waistLow:24.7, waistHigh:25.7, hipLow:35.7, hipHigh:36.7, pants:'XS (0)',       shirt:'XS'},
+  {weight:125, waistLow:25.3, waistHigh:26.3, hipLow:36.3, hipHigh:37.3, pants:'S (2/4)',      shirt:'S'},
+  {weight:130, waistLow:26,   waistHigh:27,   hipLow:37,   hipHigh:38,   pants:'S (2/4)',      shirt:'S'},
+  {weight:135, waistLow:26.5, waistHigh:27.5, hipLow:37.5, hipHigh:38.5, pants:'S (2/4)',      shirt:'S'},
+  {weight:140, waistLow:27,   waistHigh:28,   hipLow:38,   hipHigh:39,   pants:'M (6/8)',      shirt:'M'},
+  {weight:145, waistLow:27.5, waistHigh:28.5, hipLow:38.5, hipHigh:39.5, pants:'M (6/8)',      shirt:'M'},
+  {weight:150, waistLow:28,   waistHigh:29,   hipLow:39,   hipHigh:40,   pants:'M (6/8)',      shirt:'M'},
+  {weight:155, waistLow:28.5, waistHigh:30,   hipLow:39.5, hipHigh:40.8, pants:'M (6/8)',      shirt:'M'},
+  {weight:160, waistLow:29,   waistHigh:31,   hipLow:40,   hipHigh:41.5, pants:'L (10/12)',    shirt:'L'},
+  {weight:165, waistLow:29.5, waistHigh:32,   hipLow:40.5, hipHigh:42.2, pants:'L (10/12)',    shirt:'L'},
+  {weight:170, waistLow:30,   waistHigh:33,   hipLow:41,   hipHigh:43,   pants:'L (10/12)',    shirt:'L'},
+  {weight:175, waistLow:30.8, waistHigh:33.6, hipLow:41.6, hipHigh:43.8, pants:'L (10/12)',    shirt:'L'},
+  {weight:180, waistLow:31.6, waistHigh:34.2, hipLow:42.2, hipHigh:44.6, pants:'L (10/12)',    shirt:'L'},
+  {weight:185, waistLow:32.4, waistHigh:34.8, hipLow:42.8, hipHigh:45.4, pants:'XL (14/16)',   shirt:'XL'},
+  {weight:190, waistLow:33.2, waistHigh:35.4, hipLow:43.4, hipHigh:46.2, pants:'XL (14/16)',   shirt:'XL'},
+  {weight:195, waistLow:34,   waistHigh:36,   hipLow:44,   hipHigh:47,   pants:'XL (14/16)',   shirt:'XL'},
+  {weight:200, waistLow:34.5, waistHigh:36.7, hipLow:44.7, hipHigh:47.7, pants:'XL (14/16)',   shirt:'XL'},
+  {weight:205, waistLow:35,   waistHigh:37.3, hipLow:45.3, hipHigh:48.3, pants:'XL (14/16)',   shirt:'XL'},
+  {weight:210, waistLow:35.5, waistHigh:38,   hipLow:46,   hipHigh:49,   pants:'2XL (18/20)',  shirt:'2XL'},
+  {weight:215, waistLow:36,   waistHigh:38.7, hipLow:46.7, hipHigh:49.7, pants:'2XL (18/20)',  shirt:'2XL'},
+  {weight:220, waistLow:36.5, waistHigh:39.3, hipLow:47.3, hipHigh:50.3, pants:'2XL (18/20)',  shirt:'2XL'},
+  {weight:225, waistLow:37,   waistHigh:40,   hipLow:48,   hipHigh:51,   pants:'2XL (18/20)',  shirt:'2XL'},
+  {weight:230, waistLow:37.4, waistHigh:40.4, hipLow:48.4, hipHigh:51.4, pants:'2XL (18/20)',  shirt:'2XL'},
+  {weight:235, waistLow:37.9, waistHigh:40.9, hipLow:48.9, hipHigh:51.9, pants:'2XL (18/20)',  shirt:'2XL'},
+  {weight:240, waistLow:38.3, waistHigh:41.3, hipLow:49.3, hipHigh:52.3, pants:'2XL (18/20)',  shirt:'2XL'},
+  {weight:245, waistLow:38.7, waistHigh:41.7, hipLow:49.7, hipHigh:52.7, pants:'3XL (22/24)',  shirt:'3XL'},
+  {weight:250, waistLow:39.1, waistHigh:42.1, hipLow:50.1, hipHigh:53.1, pants:'3XL (22/24)',  shirt:'3XL'},
+  {weight:255, waistLow:39.6, waistHigh:42.6, hipLow:50.6, hipHigh:53.6, pants:'3XL (22/24)',  shirt:'3XL'},
+  {weight:260, waistLow:40,   waistHigh:43,   hipLow:51,   hipHigh:54,   pants:'3XL (22/24)',  shirt:'3XL'},
 ];
 
 const SIZE_TABLES = { male: MALE_SIZE_TABLE, female: FEMALE_SIZE_TABLE };
@@ -808,7 +822,7 @@ function estimateSizeForWeight(w, sex){
   const waistLow = lerp(lo.waistLow, hi.waistLow);
   const waistHigh = lerp(lo.waistHigh, hi.waistHigh);
   const nearestRow = t.reduce((a,b)=> Math.abs(b.weight-w) < Math.abs(a.weight-w) ? b : a);
-  const fmtRange = (a,b)=> Math.abs(a-b) < 0.05 ? fmt(a,1) : `${fmt(a,1)}–${fmt(b,1)}`;
+  const fmtRange = (a,b)=> Math.abs(a-b) < 0.05 ? fmt(a,1) : `${fmt(a,1)} – ${fmt(b,1)}`;
   if(sex === 'female'){
     const hipLow = lerp(lo.hipLow, hi.hipLow);
     const hipHigh = lerp(lo.hipHigh, hi.hipHigh);
@@ -834,20 +848,20 @@ function renderSizeEstimateCard(currentW, goalW, sex){
   return `
     <div class="section-title">Estimated size</div>
     <div class="card">
-      <div class="row2">
+      <div class="row2 size-split">
         <div>
           <div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">At ${fmt(currentW,0)} lbs (now)</div>
-          <div class="mono" style="margin-top:4px;">Waist ${cur.waist}</div>
-          ${cur.hip ? `<div class="mono">Hip ${cur.hip}</div>` : ''}
-          <div class="mono">Pants ${cur.pants}</div>
-          <div class="mono">Shirt ${cur.shirt}</div>
+          <div class="mono measure" style="margin-top:4px;">Waist ${cur.waist}</div>
+          ${cur.hip ? `<div class="mono measure">Hip ${cur.hip}</div>` : ''}
+          <div class="mono measure">Pants ${cur.pants}</div>
+          <div class="mono measure">Shirt ${cur.shirt}</div>
         </div>
         <div>
           <div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">At ${fmt(goalW,0)} lbs (goal)</div>
-          <div class="mono" style="margin-top:4px;">Waist ${goal.waist}</div>
-          ${goal.hip ? `<div class="mono">Hip ${goal.hip}</div>` : ''}
-          <div class="mono">Pants ${goal.pants}</div>
-          <div class="mono">Shirt ${goal.shirt}</div>
+          <div class="mono measure" style="margin-top:4px;">Waist ${goal.waist}</div>
+          ${goal.hip ? `<div class="mono measure">Hip ${goal.hip}</div>` : ''}
+          <div class="mono measure">Pants ${goal.pants}</div>
+          <div class="mono measure">Shirt ${goal.shirt}</div>
         </div>
       </div>
       <div class="helper" style="margin-top:10px;">${SIZE_ESTIMATE_DISCLAIMER}</div>
@@ -2732,7 +2746,7 @@ function renderRoadmap(){
             <div>
               <div class="phase-target">${fmt(ph.weightTarget,0)} lbs</div>
               <div class="phase-cals">${ph.eating} cal/day · maintenance ${ph.maintenance}</div>
-              <div class="phase-cals">~waist ${size.waist} · ${size.shirt}</div>
+              <div class="phase-cals">~waist <span class="measure">${size.waist}</span> · ${size.shirt}</div>
             </div>
           </div>
           ${badge}
@@ -3736,30 +3750,32 @@ function renderSettings(){
       ${(()=>{
         const isFemale = p.sex === 'female';
         const sizeTable = SIZE_TABLES[p.sex] || SIZE_TABLES.male;
-        const rangeOrDash = (a,b)=> a===b ? fmt(a,1) : `${fmt(a,1)}–${fmt(b,1)}`;
+        const rangeOrDash = (a,b)=> a===b ? fmt(a,1) : `${fmt(a,1)} – ${fmt(b,1)}`;
         return `
-      <table style="width:100%; border-collapse:collapse; font-size:13px;">
+      <div style="overflow-x:auto;">
+      <table style="width:100%; border-collapse:collapse; font-size:13px; min-width:${isFemale ? '420px' : '340px'};">
         <thead>
           <tr style="text-align:left; color:var(--moss); font-size:11px; text-transform:uppercase;">
-            <th style="padding:4px 6px 8px 0;">Weight</th>
-            <th style="padding:4px 6px 8px;">Waist</th>
-            ${isFemale ? '<th style="padding:4px 6px 8px;">Hip</th>' : ''}
-            <th style="padding:4px 6px 8px;">Pants</th>
-            <th style="padding:4px 0 8px 6px;">Shirt</th>
+            <th style="padding:4px 6px 8px 0; white-space:nowrap;">Weight</th>
+            <th style="padding:4px 6px 8px; white-space:nowrap;">Waist</th>
+            ${isFemale ? '<th style="padding:4px 6px 8px; white-space:nowrap;">Hip</th>' : ''}
+            <th style="padding:4px 6px 8px; white-space:nowrap;">Pants</th>
+            <th style="padding:4px 0 8px 6px; white-space:nowrap;">Shirt</th>
           </tr>
         </thead>
         <tbody>
           ${sizeTable.map(row=>`
             <tr class="mono" style="border-top:1px solid var(--line);">
-              <td style="padding:6px 6px 6px 0;">${row.weight} lbs</td>
-              <td style="padding:6px;">${rangeOrDash(row.waistLow, row.waistHigh)}"</td>
-              ${isFemale ? `<td style="padding:6px;">${rangeOrDash(row.hipLow, row.hipHigh)}"</td>` : ''}
-              <td style="padding:6px;">${isFemale ? row.pants : rangeOrDash(row.pantsLow, row.pantsHigh)}</td>
-              <td style="padding:6px 0 6px 6px;">${row.shirt}</td>
+              <td class="measure" style="padding:6px 6px 6px 0;">${row.weight} lbs</td>
+              <td class="measure" style="padding:6px;">${rangeOrDash(row.waistLow, row.waistHigh)}"</td>
+              ${isFemale ? `<td class="measure" style="padding:6px;">${rangeOrDash(row.hipLow, row.hipHigh)}"</td>` : ''}
+              <td class="measure" style="padding:6px;">${isFemale ? row.pants : rangeOrDash(row.pantsLow, row.pantsHigh)}</td>
+              <td class="measure" style="padding:6px 0 6px 6px;">${row.shirt}</td>
             </tr>
           `).join('')}
         </tbody>
       </table>
+      </div>
       <div class="helper" style="margin-top:10px;">${SIZE_ESTIMATE_DISCLAIMER}${isFemale ? ' Weight anchors for this table are an industry-standard size correlation, not a personal measurement — treat them as rougher than the reference itself.' : ''}</div>
         `;
       })()}
