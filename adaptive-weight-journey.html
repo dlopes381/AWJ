@@ -535,6 +535,9 @@ const FEMALE_SIZE_TABLE = [
 const SIZE_TABLES = { male: MALE_SIZE_TABLE, female: FEMALE_SIZE_TABLE };
 const SIZE_ESTIMATE_DISCLAIMER = 'Estimated from a personal reference table (weight-to-size), not a substitute for actual measurements.';
 
+// Bumped automatically by .git/hooks/pre-commit on every commit — do not edit by hand.
+const APP_VERSION = '1.0.32';
+
 // ---------------- persistence ----------------
 // Legacy entries stored a single flat `calories` number; newer entries store a
 // `meals` array (multiple calorie line-items per day) that gets summed for display.
@@ -3793,6 +3796,7 @@ function renderSettings(){
     <input type="file" id="import-file-input" accept="application/json" class="hidden">
     <button class="btn btn-danger" id="btn-reset" style="margin-top:10px;">Reset all data</button>
     <p class="helper" style="text-align:center;">This is a personal planning tool, not medical advice.</p>
+    <p class="helper" style="text-align:center;">v${APP_VERSION}</p>
   `;
 
   function bindChips(groupId, onChange){
