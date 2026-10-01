@@ -3757,20 +3757,20 @@ function renderSettings(){
         <thead>
           <tr style="text-align:left; color:var(--moss); font-size:11px; text-transform:uppercase;">
             <th style="padding:4px 6px 8px 0; white-space:nowrap;">Weight</th>
-            <th style="padding:4px 6px 8px; white-space:nowrap;">Waist</th>
-            ${isFemale ? '<th style="padding:4px 6px 8px; white-space:nowrap;">Hip</th>' : ''}
+            <th style="padding:4px 6px 8px; white-space:nowrap;">Shirt</th>
             <th style="padding:4px 6px 8px; white-space:nowrap;">Pants</th>
-            <th style="padding:4px 0 8px 6px; white-space:nowrap;">Shirt</th>
+            <th style="padding:${isFemale ? '4px 6px 8px' : '4px 0 8px 6px'}; white-space:nowrap;">Waist</th>
+            ${isFemale ? '<th style="padding:4px 0 8px 6px; white-space:nowrap;">Hip</th>' : ''}
           </tr>
         </thead>
         <tbody>
           ${sizeTable.map(row=>`
             <tr class="mono" style="border-top:1px solid var(--line);">
               <td class="measure" style="padding:6px 6px 6px 0;">${row.weight} lbs</td>
-              <td class="measure" style="padding:6px;">${rangeOrDash(row.waistLow, row.waistHigh)}"</td>
-              ${isFemale ? `<td class="measure" style="padding:6px;">${rangeOrDash(row.hipLow, row.hipHigh)}"</td>` : ''}
+              <td class="measure" style="padding:6px;">${row.shirt}</td>
               <td class="measure" style="padding:6px;">${isFemale ? row.pants : rangeOrDash(row.pantsLow, row.pantsHigh)}</td>
-              <td class="measure" style="padding:6px 0 6px 6px;">${row.shirt}</td>
+              <td class="measure" style="padding:${isFemale ? '6px' : '6px 0 6px 6px'};">${rangeOrDash(row.waistLow, row.waistHigh)}"</td>
+              ${isFemale ? `<td class="measure" style="padding:6px 0 6px 6px;">${rangeOrDash(row.hipLow, row.hipHigh)}"</td>` : ''}
             </tr>
           `).join('')}
         </tbody>
