@@ -413,14 +413,38 @@
   </div>
 </div>
 
+<div id="bulk-overlay" class="hidden" style="position:fixed; inset:0; background:var(--paper); z-index:100; overflow-y:auto;">
+  <div style="max-width:480px; margin:0 auto; padding:18px 20px 40px;">
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:6px;">
+      <button class="icon-btn" onclick="closeBulkEntry()" aria-label="Back">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+      </button>
+      <h1 class="page-title" style="margin:0;">Add multiple days</h1>
+    </div>
+    <div id="bulk-overlay-body"></div>
+  </div>
+</div>
+
 <script src="food-service.js"></script>
 <script>
 const STORAGE_KEY = 'awj:data';
-let state = { profile:null, weightLogs:[], nutritionLogs:[], ackPhaseId:null, milestones:[] };
+// Single source of truth for a brand-new state object — used on first load and on
+// "Reset all data" — so new fields (exerciseLogs, unitPrefs, reminderPrefs, ...) only
+// need to be listed once instead of drifting across multiple inline literals.
+function freshState(){
+  return {
+    profile:null, weightLogs:[], nutritionLogs:[], exerciseLogs:[], ackPhaseId:null, milestones:[],
+    unitPrefs: { weight:'lbs', height:'in' },
+    reminderPrefs: { enabled:false, time:'19:00' },
+  };
+}
+let state = freshState();
 let activeTab = 'dashboard';
 let editingActivityDate = null;
 let activityDraftMeals = [];
 let editActivityDraftMeals = [];
+let activityDraftExercise = [];
+let editActivityDraftExercise = [];
 let foodSearchMode = null;   // 'new' | 'edit' — which draft meals array/day to add the food to
 let foodMealCategory = 'Other';
 let foodSearchQuery = '';
@@ -445,6 +469,7 @@ let calorieBreakdownCompareFilter = 'lastWeek';
 
 const MEAL_CATEGORIES = ['Breakfast','Lunch','Dinner','Snack','Drinks','Other'];
 const MEAL_CATEGORY_COLORS = { Breakfast:'var(--gold)', Lunch:'var(--pine)', Dinner:'var(--pine-dark)', Snack:'var(--moss)', Drinks:'var(--sky)', Other:'var(--ink-soft)' };
+const EXERCISE_TYPES = ['Walk','Run','Cycling','Strength','Swim','Other'];
 const DATE_FILTERS = [
   {val:'today', label:'Today'},
   {val:'yesterday', label:'Yesterday'},
@@ -550,15 +575,30 @@ function migrateNutritionLogs(){
   });
 }
 
+// Backfills any field added after a profile/export was first created, so older saved
+// data (or an older JSON export) loads cleanly with sane defaults instead of crashing
+// on a missing array/object. Called from loadState(), importDataFile(), and anywhere
+// else state is loaded from outside the current session.
+function ensureStateShape(){
+  if(!state.weightLogs) state.weightLogs = [];
+  if(!state.nutritionLogs) state.nutritionLogs = [];
+  if(!Array.isArray(state.exerciseLogs)) state.exerciseLogs = [];
+  if(!Array.isArray(state.milestones)) state.milestones = [];
+  if(!state.unitPrefs || typeof state.unitPrefs !== 'object') state.unitPrefs = { weight:'lbs', height:'in' };
+  if(!state.unitPrefs.weight) state.unitPrefs.weight = 'lbs';
+  if(!state.unitPrefs.height) state.unitPrefs.height = 'in';
+  if(!state.reminderPrefs || typeof state.reminderPrefs !== 'object') state.reminderPrefs = { enabled:false, time:'19:00' };
+  if(!state.reminderPrefs.time) state.reminderPrefs.time = '19:00';
+  if(state.profile && !state.profile.calibrationMode) state.profile.calibrationMode = 'auto';
+  migrateNutritionLogs();
+}
+
 async function loadState(){
   try{
     const raw = localStorage.getItem(STORAGE_KEY);
     if(raw){ state = JSON.parse(raw); }
   }catch(e){ /* no data yet */ }
-  if(!state.weightLogs) state.weightLogs = [];
-  if(!state.nutritionLogs) state.nutritionLogs = [];
-  if(!Array.isArray(state.milestones)) state.milestones = [];
-  migrateNutritionLogs();
+  ensureStateShape();
 }
 async function saveState(){
   try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
@@ -566,15 +606,65 @@ async function saveState(){
 }
 
 function exportData(){
-  const blob = new Blob([JSON.stringify(state, null, 2)], {type:'application/json'});
+  downloadBlob(new Blob([JSON.stringify(state, null, 2)], {type:'application/json'}), `adaptive-weight-journey-${todayStr()}.json`);
+}
+
+function downloadBlob(blob, filename){
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `adaptive-weight-journey-${todayStr()}.json`;
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+}
+
+function csvEscape(val){
+  const s = val===null || val===undefined ? '' : String(val);
+  return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
+}
+
+// One row per logged date, merging weight/nutrition/exercise — a flat, Excel/Sheets-
+// friendly view alongside the full-fidelity JSON export (which stays the authoritative
+// backup/restore format; this is read-only, for spreadsheets). Always in lbs/inches
+// (the app's native storage unit, same as JSON) regardless of the display unit
+// preference, so the two export formats never disagree with each other.
+function exportDataCSV(){
+  const dates = new Set([
+    ...state.weightLogs.map(l=>l.date),
+    ...state.nutritionLogs.map(n=>n.date),
+    ...(state.exerciseLogs||[]).map(e=>e.date),
+  ]);
+  if(dates.size===0){ showToast('Nothing to export yet — log a weight or calorie entry first.'); return; }
+  const sortedDates = [...dates].sort();
+  const headers = ['Date','Weight (lbs)','Calories','Protein (g)','Carbs (g)','Fat (g)','Water (oz)','Meals','Exercise','Weight Notes'];
+  const rows = [headers];
+  sortedDates.forEach(date=>{
+    const w = state.weightLogs.find(l=>l.date===date);
+    const n = state.nutritionLogs.find(x=>x.date===date);
+    const ex = (state.exerciseLogs||[]).find(x=>x.date===date);
+    const meals = n && n.meals && n.meals.length ? n.meals.map(m=>`${m.label}: ${m.calories} cal`).join('; ') : '';
+    const activities = ex && ex.activities && ex.activities.length
+      ? ex.activities.map(a=> `${a.type} ${a.durationMin}min${a.caloriesBurned?` (~${a.caloriesBurned} cal)`:''}`).join('; ')
+      : '';
+    rows.push([
+      date,
+      w ? w.weight : '',
+      n ? nutritionTotalCalories(n) : '',
+      n && n.protein ? n.protein : '',
+      n && n.carbs ? n.carbs : '',
+      n && n.fat ? n.fat : '',
+      n && n.water ? n.water : '',
+      meals,
+      activities,
+      w ? (w.notes||'') : '',
+    ]);
+  });
+  const csv = rows.map(r=>r.map(csvEscape).join(',')).join('\r\n');
+  // Leading BOM so Excel (Windows in particular) detects UTF-8 instead of guessing
+  // the system codepage and mangling any non-ASCII characters in notes/meal names.
+  downloadBlob(new Blob(['﻿'+csv], {type:'text/csv;charset=utf-8;'}), `adaptive-weight-journey-${todayStr()}.csv`);
 }
 
 function importDataFile(file){
@@ -588,8 +678,15 @@ function importDataFile(file){
       return;
     }
     if(!confirm('This will replace all current data on this device with the imported file. Continue?')) return;
-    state = { profile: parsed.profile||null, weightLogs: parsed.weightLogs, nutritionLogs: parsed.nutritionLogs, ackPhaseId: parsed.ackPhaseId||null, milestones: Array.isArray(parsed.milestones) ? parsed.milestones : [] };
-    migrateNutritionLogs();
+    state = {
+      profile: parsed.profile||null, weightLogs: parsed.weightLogs, nutritionLogs: parsed.nutritionLogs,
+      exerciseLogs: Array.isArray(parsed.exerciseLogs) ? parsed.exerciseLogs : [],
+      ackPhaseId: parsed.ackPhaseId||null,
+      milestones: Array.isArray(parsed.milestones) ? parsed.milestones : [],
+      unitPrefs: parsed.unitPrefs || null,
+      reminderPrefs: parsed.reminderPrefs || null,
+    };
+    ensureStateShape();
     await saveState();
     showToast('Data imported.');
     boot();
@@ -686,20 +783,27 @@ const CALIBRATION_MIN_SPAN_DAYS = 21;
 const CALIBRATION_MIN_FACTOR = 0.75;
 const CALIBRATION_MAX_FACTOR = 1.25;
 const CAL_PER_LB = 3500;
+// Logged exercise is self-estimated (by the user or a device) and notoriously
+// overstated, so it only ever nets out a PORTION of itself from the energy-balance
+// calculation below — never treated as an exact calorie count.
+const EXERCISE_CALIBRATION_WEIGHT = 0.7;
 
 // Always returns a diagnostic object (except when body stats are missing entirely,
 // where calibration is inapplicable) so the UI can explain *why* calibration isn't
 // active yet, rather than silently doing nothing. Check `.active` before using the
-// calibration numbers.
+// calibration numbers. This is the LIVE calculation, always kept up to date from logs
+// — getEffectiveCalibrationFactor() below is what decides whether computePhases()
+// actually applies it (it doesn't, while calibration is paused).
 function computeCalibration(){
   const p = state.profile;
   if(!hasBodyStats(p)) return null;
 
   const nutrition = [...state.nutritionLogs].sort((a,b)=> new Date(a.date)-new Date(b.date));
   let recentNutrition = [];
+  let nCutoff = null;
   if(nutrition.length){
     const lastNutritionDate = new Date(nutrition[nutrition.length-1].date);
-    const nCutoff = lastNutritionDate.getTime() - CALIBRATION_WINDOW_DAYS*86400000;
+    nCutoff = lastNutritionDate.getTime() - CALIBRATION_WINDOW_DAYS*86400000;
     recentNutrition = nutrition.filter(n=> new Date(n.date).getTime() >= nCutoff);
   }
 
@@ -734,9 +838,22 @@ function computeCalibration(){
   const { slope } = leastSquaresSlope(xs, ys); // lbs/day, negative = losing
   const avgWeightInWindow = ys.reduce((a,b)=>a+b,0)/ys.length;
 
+  // Exercise, within the same window as the nutrition logs above: weight change
+  // already reflects ALL energy burned (basal + lifestyle activity + exercise), so
+  // without this, a stretch with unusually heavy workouts reads as "metabolism runs
+  // higher" and inflates the factor applied to every FUTURE phase — including rest
+  // days that won't repeat that exercise. Netting out logged exercise isolates the
+  // non-exercise (basal + activity-level) TDEE that tdeeAtWeight() actually models.
+  // Spread over the fixed window length (not the count of exercise logs), since
+  // exercise is naturally occasional, not daily — and damped by
+  // EXERCISE_CALIBRATION_WEIGHT since self-reported estimates run optimistic.
+  const recentExercise = nCutoff===null ? [] : (state.exerciseLogs||[]).filter(e=> new Date(e.date).getTime() >= nCutoff);
+  const totalExerciseCalories = recentExercise.reduce((s,e)=> s+exerciseCaloriesTotal(e.activities), 0);
+  const avgDailyExerciseCalories = totalExerciseCalories / CALIBRATION_WINDOW_DAYS;
+
   const calcTdee = tdeeAtWeight(p, avgWeightInWindow, 1);
   // Energy balance: actual calories burned = calories eaten - (weight change converted to calories)
-  const actualTdee = avgDailyEaten - (slope * CAL_PER_LB);
+  const actualTdee = avgDailyEaten - (slope * CAL_PER_LB) - (avgDailyExerciseCalories * EXERCISE_CALIBRATION_WEIGHT);
   const rawFactor = actualTdee / calcTdee;
   const calibrationFactor = Math.min(CALIBRATION_MAX_FACTOR, Math.max(CALIBRATION_MIN_FACTOR, rawFactor));
 
@@ -750,8 +867,24 @@ function computeCalibration(){
     daysTracked,
     nutritionLogs: recentNutrition.length,
     weightLogs: recentWeights.length,
+    exerciseLogs: recentExercise.length,
+    avgDailyExerciseCalories: Math.round(avgDailyExerciseCalories),
     clamped: Math.abs(rawFactor-calibrationFactor) > 0.001,
   };
+}
+
+// Resolves the factor computePhases() should actually apply right now. While
+// calibration is set to "auto" this is just the live computeCalibration() result —
+// while "paused" it's frozen at whatever was captured the moment it was paused, so
+// today's calorie target holds steady instead of drifting with new logs or snapping
+// back to an uncalibrated 1x. Diagnostics/trend UI keep reading computeCalibration()
+// directly so logging and trends are visibly unaffected by the pause.
+function getEffectiveCalibrationFactor(calibration){
+  const p = state.profile;
+  if(p && (p.calibrationMode||'auto')==='paused'){
+    return typeof p.frozenCalibrationFactor==='number' ? p.frozenCalibrationFactor : 1;
+  }
+  return calibration?.active ? calibration.calibrationFactor : 1;
 }
 
 // ---------------- roadmap engine ----------------
@@ -799,7 +932,7 @@ function computePhases(p){
   targets.push(p.goalWeight);
   const dedup = [...new Set(targets)].sort((a,b)=> dir>0 ? a-b : b-a);
   const calibration = computeCalibration();
-  const calibrationFactor = calibration?.active ? calibration.calibrationFactor : 1;
+  const calibrationFactor = getEffectiveCalibrationFactor(calibration);
   return dedup.map((t,i)=>({
     id:i+1,
     weightTarget:t,
@@ -828,7 +961,10 @@ function estimateSizeForWeight(w, sex){
   const lerp = (a,b)=> a + (b-a)*frac;
   const waistLow = lerp(lo.waistLow, hi.waistLow);
   const waistHigh = lerp(lo.waistHigh, hi.waistHigh);
-  const nearestRow = t.reduce((a,b)=> Math.abs(b.weight-w) < Math.abs(a.weight-w) ? b : a);
+  // <= (not <) so an exact weight-midpoint tie keeps the later/higher-weight row —
+  // the table is sorted ascending by weight, so that's the larger size, matching the
+  // documented tie-break (a strict `<` was keeping the earlier/smaller-size row instead).
+  const nearestRow = t.reduce((a,b)=> Math.abs(b.weight-w) <= Math.abs(a.weight-w) ? b : a);
   const fmtRange = (a,b)=> Math.abs(a-b) < 0.05 ? fmt(a,1) : `${fmt(a,1)} – ${fmt(b,1)}`;
   if(sex === 'female'){
     const hipLow = lerp(lo.hipLow, hi.hipLow);
@@ -857,14 +993,14 @@ function renderSizeEstimateCard(currentW, goalW, sex){
     <div class="card">
       <div class="row2 size-split">
         <div>
-          <div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">At ${fmt(currentW,0)} lbs (now)</div>
+          <div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">At ${fmtWeight(currentW,0)} ${weightUnitLabel()} (now)</div>
           <div class="mono measure" style="margin-top:4px;">Waist ${cur.waist}</div>
           ${cur.hip ? `<div class="mono measure">Hip ${cur.hip}</div>` : ''}
           <div class="mono measure">Pants ${cur.pants}</div>
           <div class="mono measure">Shirt ${cur.shirt}</div>
         </div>
         <div>
-          <div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">At ${fmt(goalW,0)} lbs (goal)</div>
+          <div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">At ${fmtWeight(goalW,0)} ${weightUnitLabel()} (goal)</div>
           <div class="mono measure" style="margin-top:4px;">Waist ${goal.waist}</div>
           ${goal.hip ? `<div class="mono measure">Hip ${goal.hip}</div>` : ''}
           <div class="mono measure">Pants ${goal.pants}</div>
@@ -927,6 +1063,30 @@ function isGoalReached(){
   return avg <= p.goalWeight + 0.001;
 }
 
+// ---------------- units ----------------
+// Everything is ALWAYS stored internally in lbs/inches (profile, weightLogs, phases,
+// etc. never change) — unitPrefs only controls how numbers are *displayed* and how
+// typed input is *interpreted*, converted back to lbs/in immediately at the form
+// boundary. This keeps every existing calculation (BMR, phases, calibration, trend)
+// untouched and working purely in lbs/inches, same as before this feature existed.
+function isMetricWeight(){ return !!(state.unitPrefs && state.unitPrefs.weight==='kg'); }
+function isMetricHeight(){ return !!(state.unitPrefs && state.unitPrefs.height==='cm'); }
+function lbsToKg(lbs){ return lbs / 2.205; }
+function kgToLbs(kg){ return kg * 2.205; }
+function inToCm(inches){ return inches * 2.54; }
+function cmToIn(cm){ return cm / 2.54; }
+function weightUnitLabel(singular){ return isMetricWeight() ? 'kg' : (singular ? 'lb' : 'lbs'); }
+function heightUnitLabel(){ return isMetricHeight() ? 'cm' : 'in'; }
+// Converts a stored lbs/inches value to the user's display unit and formats it (same
+// signature as fmt(), just unit-aware) — no unit suffix, callers append weightUnitLabel()/
+// heightUnitLabel() same as they already append literal "lbs"/"in" text today.
+function fmtWeight(lbs, d=1){ return fmt(isMetricWeight() ? lbsToKg(lbs) : lbs, d); }
+function fmtHeight(inches, d=0){ return fmt(isMetricHeight() ? inToCm(inches) : inches, d); }
+// Converts a value TYPED in the user's current display unit back to the lbs/inches
+// storage unit — used once, right when a form field is read.
+function weightInputToLbs(val){ return isMetricWeight() ? kgToLbs(val) : val; }
+function heightInputToIn(val){ return isMetricHeight() ? cmToIn(val) : val; }
+
 // ---------------- utils ----------------
 function fmt(n, d=1){ return Number(n).toFixed(d).replace(/\.0$/,''); }
 function todayStr(){
@@ -962,10 +1122,10 @@ function showToast(msg, opts={}){
 }
 
 // ---------------- engagement (streaks & consistency) ----------------
-// A logged day counts toward the streak/consistency stats if either weight or
-// nutrition was recorded that date — matches how the Log tab's History treats a day.
+// A logged day counts toward the streak/consistency stats if weight, nutrition, or
+// exercise was recorded that date — matches how the Log tab's History treats a day.
 function loggedDatesSet(){
-  return new Set([...state.weightLogs.map(l=>l.date), ...state.nutritionLogs.map(n=>n.date)]);
+  return new Set([...state.weightLogs.map(l=>l.date), ...state.nutritionLogs.map(n=>n.date), ...(state.exerciseLogs||[]).map(e=>e.date)]);
 }
 function dateKeyFor(d){
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
@@ -996,6 +1156,56 @@ function loggingConsistency(days=7){
   return count;
 }
 
+// ---------------- logging reminders ----------------
+// A real OS-level push notification while the browser is fully closed needs a
+// service worker plus a push server, which is out of scope for a single-file,
+// no-backend app (see "No service worker/offline support" in the summary doc's Known
+// limitations — deliberately not added there, for the same reason). What this DOES
+// deliver without any of that: (1) a Notification-API prompt while this tab is open
+// or backgrounded at/after the scheduled time, best-effort and silently skipped if
+// permission isn't granted; and (2) an always-visible in-app banner (reminderDueToday(),
+// read by renderDashboard()) shown whenever the app is opened after the reminder time
+// on a day nothing has been logged yet — needs no permission and can't silently fail,
+// so it's the fallback users should actually rely on. Never touches streak/consistency
+// state itself — purely reads loggedDatesSet(), same as the streak counters do.
+function fmtReminderTime(time24){
+  const [h,m] = (time24||'19:00').split(':').map(Number);
+  const d = new Date(); d.setHours(h,m,0,0);
+  return d.toLocaleTimeString(undefined, {hour:'numeric', minute:'2-digit'});
+}
+
+function reminderDueToday(){
+  const prefs = state.reminderPrefs;
+  if(!prefs || !prefs.enabled) return false;
+  if(loggedDatesSet().has(todayStr())) return false;
+  const [h,m] = (prefs.time||'19:00').split(':').map(Number);
+  const due = new Date(); due.setHours(h,m,0,0);
+  return new Date() >= due;
+}
+
+// Fires at most once per day (tracked via reminderPrefs.lastNotifiedDate) — called
+// on boot, on a slow repeating interval while the tab stays open, and whenever the
+// tab becomes visible again, so returning to an already-open tab later in the day
+// still triggers it without needing a background timer to have fired exactly on time.
+async function maybeFireReminderNotification(){
+  const prefs = state.reminderPrefs;
+  if(!reminderDueToday()) return;
+  if(prefs.lastNotifiedDate === todayStr()) return;
+  if(typeof Notification !== 'undefined' && Notification.permission === 'granted'){
+    try{ new Notification('Adaptive Weight Journey', { body: "You haven't logged today yet — add your weight or calories to keep your streak going.", tag:'awj-reminder' }); }catch(e){ /* ignore — in-app banner still covers this */ }
+  }
+  prefs.lastNotifiedDate = todayStr();
+  await saveState();
+}
+
+let reminderIntervalId = null;
+function startReminderScheduler(){
+  if(reminderIntervalId) clearInterval(reminderIntervalId);
+  maybeFireReminderNotification();
+  reminderIntervalId = setInterval(maybeFireReminderNotification, 5*60*1000);
+}
+document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible') maybeFireReminderNotification(); });
+
 // ---------------- setup screen ----------------
 const ACTIVITY_OPTIONS = [
   {val:'sedentary', label:'Sedentary', helper:'Little to no exercise'},
@@ -1012,13 +1222,16 @@ const DEFICIT_PRESETS = [250,500,750,1000];
 
 function readSetupFormValues(prefix){
   const val = id => document.getElementById(`${prefix}${id}`);
-  const startWeight = parseFloat(val('current').value);
-  const height = parseFloat(val('height').value);
+  // Fields are typed in the user's current display unit — converted back to the
+  // internal lbs/inches storage unit right here, at the form boundary, so every
+  // downstream calc (BMR, phases, calibration...) keeps working purely in lbs/in.
+  const startWeight = weightInputToLbs(parseFloat(val('current').value));
+  const height = heightInputToIn(parseFloat(val('height').value));
   const age = parseFloat(val('age').value);
   const sex = document.querySelector(`#${prefix}grp-sex .chip.active`)?.dataset.val;
   const activityLevel = document.querySelector(`#${prefix}grp-activity .chip.active`)?.dataset.val;
   const goalType = document.querySelector(`#${prefix}grp-goaltype .chip.active`)?.dataset.val || 'loss';
-  const goalWeightInput = parseFloat(val('goal')?.value);
+  const goalWeightInput = weightInputToLbs(parseFloat(val('goal')?.value));
   const goalWeight = goalType==='maintain' ? startWeight : goalWeightInput;
   const calcMode = document.querySelector(`#${prefix}grp-calcmode .chip.active`)?.dataset.val || 'auto';
   const multiplierChip = document.querySelector(`#${prefix}grp-multiplier .chip.active`)?.dataset.val;
@@ -1084,12 +1297,12 @@ function renderSetupScreen(){
         </div>
         <div class="row2">
           <div class="field">
-            <label>Current weight (lbs)</label>
-            <input type="number" id="f-current" value="${p.startWeight||''}" placeholder="e.g. 315" inputmode="decimal">
+            <label>Current weight (${weightUnitLabel()})</label>
+            <input type="number" id="f-current" value="${p.startWeight ? fmtWeight(p.startWeight) : ''}" placeholder="e.g. ${fmtWeight(315,0)}" inputmode="decimal">
           </div>
           <div class="field">
-            <label>Height (inches)</label>
-            <input type="number" id="f-height" value="${p.height||''}" placeholder="e.g. 68" inputmode="decimal">
+            <label>Height (${heightUnitLabel()})</label>
+            <input type="number" id="f-height" value="${p.height ? fmtHeight(p.height) : ''}" placeholder="e.g. ${fmtHeight(68)}" inputmode="decimal">
           </div>
         </div>
         <div class="row2">
@@ -1125,10 +1338,10 @@ function renderSetupScreen(){
           </div>
         </div>
         <div class="field" id="f-goal-weight-field" style="margin-bottom:0;">
-          <label>Goal weight (lbs)</label>
-          <input type="number" id="f-goal" value="${p.goalWeight||''}" placeholder="e.g. 220" inputmode="decimal">
+          <label>Goal weight (${weightUnitLabel()})</label>
+          <input type="number" id="f-goal" value="${p.goalWeight ? fmtWeight(p.goalWeight) : ''}" placeholder="e.g. ${fmtWeight(220,0)}" inputmode="decimal">
         </div>
-        <div id="goal-error" class="helper" style="color:var(--danger); display:none;">Goal weight must be at least 5 lbs from your current weight, in the right direction for your goal type.</div>
+        <div id="goal-error" class="helper" style="color:var(--danger); display:none;">Goal weight must be at least ${fmtWeight(5,1)} ${weightUnitLabel()} from your current weight, in the right direction for your goal type.</div>
       </div>
 
       <div class="card">
@@ -1167,7 +1380,7 @@ function renderSetupScreen(){
           <div class="field">
             <label>Adjust every</label>
             <div class="chip-group" id="f-grp-interval">
-              ${[5,10].map(v=>`<div class="chip ${((p.interval||5)==v)?'active':''}" data-val="${v}">${v} lbs</div>`).join('')}
+              ${[5,10].map(v=>`<div class="chip ${((p.interval||5)==v)?'active':''}" data-val="${v}">${fmtWeight(v,1)} ${weightUnitLabel()}</div>`).join('')}
             </div>
             <div class="helper">Your calorie target steps as you reach each weight milestone.</div>
           </div>
@@ -1483,7 +1696,7 @@ async function quickLogEntry(weightVal, calVal){
 
   if(hasWeight){
     const outlier = findWeightOutlier(weightVal, date, existingWeight?.id);
-    if(outlier && !confirm(`That's ${fmt(outlier.diff,1)} lbs from your last entry (${fmt(outlier.mostRecent.weight)} lbs on ${prettyDate(outlier.mostRecent.date)}). Save ${fmt(weightVal)} lbs anyway?`)){
+    if(outlier && !confirm(`That's ${fmtWeight(outlier.diff,1)} ${weightUnitLabel()} from your last entry (${fmtWeight(outlier.mostRecent.weight)} ${weightUnitLabel()} on ${prettyDate(outlier.mostRecent.date)}). Save ${fmtWeight(weightVal)} ${weightUnitLabel()} anyway?`)){
       return;
     }
   }
@@ -1513,10 +1726,15 @@ async function quickLogEntry(weightVal, calVal){
   }
   await saveState();
 
-  const activeAfter = getActivePhase(phases, rollingAverageWeight());
+  // Recomputed fresh (not reusing `phases` from before the save) — the entry just
+  // saved can itself shift the metabolic calibration factor, which would otherwise
+  // make this toast's "updated to Y" number stale vs. what the dashboard shows a
+  // moment later from its own fresh computePhases() call.
+  const phasesAfter = computePhases(p);
+  const activeAfter = getActivePhase(phasesAfter, rollingAverageWeight());
   const goalAfter = isGoalReached();
   if(goalAfter && !goalBefore){
-    showToast(`🎉 Goal reached! You hit your target weight of ${fmt(p.goalWeight,0)} lbs.`);
+    showToast(`🎉 Goal reached! You hit your target weight of ${fmtWeight(p.goalWeight,0)} ${weightUnitLabel()}.`);
   } else if(hasWeight && activeAfter.id !== activeBefore.id){
     showToast(`🏁 Milestone reached! Calorie target updated from ${activeBefore.eating} to ${activeAfter.eating}.`);
   } else {
@@ -1550,6 +1768,7 @@ function renderDashboard(){
   const taperedNote = p.taperDeficit && currentAdjust !== p.deficit ? ' (tapered)' : '';
   const deficitLabel = goalType==='gain' ? `${currentAdjust} cal surplus${taperedNote}` : goalType==='maintain' ? 'Maintaining' : `${currentAdjust} cal deficit${taperedNote}`;
   const calibration = hasBodyStats(p) ? computeCalibration() : null;
+  const calibrationPaused = (p.calibrationMode||'auto')==='paused';
   const streak = computeLoggingStreak();
   const consistency7 = loggingConsistency(7);
   const todaysWeightLog = state.weightLogs.find(l=>l.date===todayStr());
@@ -1558,8 +1777,15 @@ function renderDashboard(){
 
   const activeIdx = phases.findIndex(ph=>ph.id===active.id);
   const prevTarget = activeIdx>0 ? phases[activeIdx-1].weightTarget : p.startWeight;
-  const segmentTotal = Math.abs(active.weightTarget - prevTarget) || 1;
-  const segmentProgressed = Math.max(0, Math.abs(avgW - prevTarget));
+  const segmentGap = Math.abs(active.weightTarget - prevTarget);
+  // When the active phase IS phase 1, its target is ~startWeight itself, so prevTarget
+  // and active.weightTarget are (almost) the same value — there's no real segment to
+  // measure against. That only happens when the rolling average sits on the wrong side
+  // of the starting weight (e.g. a weigh-in slightly above a just-entered starting
+  // weight). Dividing by that ~0 gap used to show a false 100% full bar while the
+  // "remaining" text correctly still showed lbs left to go — show 0% instead.
+  const segmentTotal = segmentGap > 0.01 ? segmentGap : (p.interval || 1);
+  const segmentProgressed = segmentGap > 0.01 ? Math.max(0, Math.abs(avgW - prevTarget)) : 0;
   const milestonePct = goalDone ? 100 : Math.max(0, Math.min(100, (segmentProgressed/segmentTotal)*100));
 
   const el = document.getElementById('view-dashboard');
@@ -1567,12 +1793,13 @@ function renderDashboard(){
   const insightsWasOpen = existingInsights ? existingInsights.open : true;
   el.innerHTML = `
     <div class="dash-top">
+      ${reminderDueToday() ? `<div class="banner">⏰ <div>You haven't logged today yet${(state.reminderPrefs.time) ? ` (reminder set for ${fmtReminderTime(state.reminderPrefs.time)})` : ''} — a quick weight or calorie entry below keeps your streak and trend accurate.</div></div>` : ''}
       <div class="hero-card">
         <div class="hero-top">
           <div>
             <div class="hero-label">Current weight</div>
-            <div class="hero-weight mono">${fmt(cw)}<span style="font-size:16px; opacity:.7;"> lbs</span></div>
-            <div class="hero-goal">Goal: ${fmt(p.goalWeight,0)} lbs</div>
+            <div class="hero-weight mono">${fmtWeight(cw)}<span style="font-size:16px; opacity:.7;"> ${weightUnitLabel()}</span></div>
+            <div class="hero-goal">Goal: ${fmtWeight(p.goalWeight,0)} ${weightUnitLabel()}</div>
           </div>
           <div style="text-align:right;">
             <div class="hero-label">Today's target</div>
@@ -1584,14 +1811,14 @@ function renderDashboard(){
         <div class="hero-progress-track"><div class="hero-progress-fill" style="width:${progressPct}%;"></div></div>
         <div class="hero-stats">
           <span>${fmt(progressPct,1)}% of the way there</span>
-          <span>${fmt(remaining,1)} lbs to go</span>
+          <span>${fmtWeight(remaining,1)} ${weightUnitLabel()} to go</span>
         </div>
       </div>
 
       <div class="milestone-card ${goalDone?'reached':''}">
         <div class="milestone-head"><span>${goalDone?'🎉':'🎯'}</span><span>${goalDone?'Goal Reached':'Next Milestone'}</span></div>
-        <div class="milestone-target mono">${fmt(active.weightTarget,0)} lbs</div>
-        <div class="milestone-remaining">${goalDone ? `You reached your goal of ${fmt(p.goalWeight,0)} lbs — set a new one any time from Setup.` : distance<0.15 ? `Only ${fmt(distance,2)} lb away` : `${fmt(distance,1)} lbs remaining`}</div>
+        <div class="milestone-target mono">${fmtWeight(active.weightTarget,0)} ${weightUnitLabel()}</div>
+        <div class="milestone-remaining">${goalDone ? `You reached your goal of ${fmtWeight(p.goalWeight,0)} ${weightUnitLabel()} — set a new one any time from Setup.` : distance<0.15 ? `Only ${fmt(distance,2)} lb away` : `${fmtWeight(distance,1)} ${weightUnitLabel()} remaining`}</div>
         ${!goalDone ? `<div class="milestone-progress-track"><div class="milestone-progress-fill" style="width:${milestonePct}%;"></div></div>` : ''}
       </div>
 
@@ -1602,8 +1829,8 @@ function renderDashboard(){
       <div class="stat-grid">
         <div class="stat-box">
           <div class="k">${totalChangeLabel}</div>
-          <div class="v">${fmt(Math.abs(totalChange))} lbs</div>
-          <div class="sub">Avg: ${fmt(avgW)} lbs</div>
+          <div class="v">${fmtWeight(Math.abs(totalChange))} ${weightUnitLabel()}</div>
+          <div class="sub">Avg: ${fmtWeight(avgW)} ${weightUnitLabel()}</div>
         </div>
         <div class="stat-box">
           <div class="k">Current phase</div>
@@ -1652,8 +1879,8 @@ function renderDashboard(){
           </div>
           <div class="row2">
             <div class="field" style="margin-bottom:0;">
-              <label>Weight (lbs)</label>
-              <input type="number" id="quick-weight-input" placeholder="optional" inputmode="decimal" value="${todaysWeightLog ? todaysWeightLog.weight : ''}" ${todaysLogged?'readonly':''}>
+              <label>Weight (${weightUnitLabel()})</label>
+              <input type="number" id="quick-weight-input" placeholder="optional" inputmode="decimal" value="${todaysWeightLog ? fmtWeight(todaysWeightLog.weight) : ''}" ${todaysLogged?'readonly':''}>
             </div>
             <div class="field" style="margin-bottom:0;">
               <label>Calories</label>
@@ -1682,7 +1909,7 @@ function renderDashboard(){
                 <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Current strategy</div><div class="mono" style="font-weight:600; margin-top:4px;">${deficitLabel}</div></div>
                 <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Calculated multiplier</div><div class="mono" style="font-weight:600; margin-top:4px;">${fmt(p.recommendedMultiplier)}x</div></div>
               </div>
-              <div class="helper" style="margin-top:10px;">Starting calories were ${calcStartingCalories(p)} cal/day at ${fmt(p.startWeight,0)} lbs.${calibration?.active? ` Calorie targets are calibrated ${calibration.calibrationFactor>=1?'up':'down'} ${fmt(Math.abs((calibration.calibrationFactor-1)*100),1)}% based on your logged results.` : calibration && calibration.daysTracked>0? ` Calibration isn't active yet — needs ${calibration.daysNeeded} days of tracked history (${calibration.daysTracked} so far) to avoid overreacting to a short noisy stretch.` : ''}</div>
+              <div class="helper" style="margin-top:10px;">Starting calories were ${calcStartingCalories(p)} cal/day at ${fmtWeight(p.startWeight,0)} ${weightUnitLabel()}.${calibrationPaused? ` Calibration is paused — calorie targets are holding at a fixed ${fmt(Math.abs((getEffectiveCalibrationFactor(calibration)-1)*100),1)}% ${getEffectiveCalibrationFactor(calibration)>=1?'increase':'decrease'}.` : calibration?.active? ` Calorie targets are calibrated ${calibration.calibrationFactor>=1?'up':'down'} ${fmt(Math.abs((calibration.calibrationFactor-1)*100),1)}% based on your logged results.` : calibration && calibration.daysTracked>0? ` Calibration isn't active yet — needs ${calibration.daysNeeded} days of tracked history (${calibration.daysTracked} so far) to avoid overreacting to a short noisy stretch.` : ''}</div>
             ` : `
               <div class="helper">Add your height, age, sex, and activity level in Setup to see a personalized BMR/TDEE breakdown.</div>
             `}
@@ -1699,7 +1926,7 @@ function renderDashboard(){
 
         <div class="section-title">Journey</div>
         <div class="card trail-wrap">${renderTrailSVG(phases, avgW)}</div>
-        <div class="helper" style="margin-top:8px;">Each dot marks a calorie-target phase from ${fmt(p.startWeight,0)} to ${fmt(p.goalWeight,0)} lbs — filled pine dots are reached, gold is your current step.</div>
+        <div class="helper" style="margin-top:8px;">Each dot marks a calorie-target phase from ${fmt(p.startWeight,0)} to ${fmtWeight(p.goalWeight,0)} ${weightUnitLabel()} — filled pine dots are reached, gold is your current step.</div>
 
         ${renderSizeEstimateCard(avgW, p.goalWeight, p.sex)}
 
@@ -1736,7 +1963,7 @@ function renderDashboard(){
     }
     const weightRaw = quickWeightInput.value.trim();
     const calRaw = quickCalInput.value.trim();
-    const weightVal = weightRaw ? parseFloat(weightRaw) : null;
+    const weightVal = weightRaw ? weightInputToLbs(parseFloat(weightRaw)) : null;
     const calVal = calRaw ? parseFloat(calRaw) : null;
     if(weightRaw && !(weightVal>0)){ showToast('Enter a valid weight.'); return; }
     if(calRaw && !(calVal>=0)){ showToast('Enter a valid calorie amount.'); return; }
@@ -1782,7 +2009,7 @@ function renderCalcDetails(){
     body.innerHTML = `
       <p class="page-sub">This profile doesn't have body stats yet, so calories are estimated with a flat weight × multiplier formula instead of BMR/TDEE.</p>
       <div class="card stack">
-        ${detailRow('Phase maintenance', `${fmt(active.weightTarget,0)} lbs × ${p.multiplier}`, `${active.maintenance} cal`)}
+        ${detailRow('Phase maintenance', `${fmtWeight(active.weightTarget,0)} ${weightUnitLabel()} × ${p.multiplier}`, `${active.maintenance} cal`)}
         ${detailRow(`Phase eating (${adjustWord})`, `${active.maintenance} cal ${goalType==='gain'?'+':'−'} ${legacyAdjust} cal`, `${active.eating} cal`)}
       </div>
       <p class="helper" style="text-align:center; margin-top:16px;">Add your height, age, sex, and activity level in Setup for a personalized BMR/TDEE-based estimate.</p>
@@ -1798,7 +2025,11 @@ function renderCalcDetails(){
   const activityLabelMap = {sedentary:'Sedentary (1.20×)', light:'Light activity (1.375×)', moderate:'Moderate activity (1.55×)', veryActive:'Very active (1.725×)'};
   const startingCalories = calcStartingCalories(p);
   const calibration = computeCalibration();
-  const calibrationFactor = calibration?.active ? calibration.calibrationFactor : 1;
+  const calibrationPaused = (p.calibrationMode||'auto')==='paused';
+  // Matches whatever computePhases() actually used for active.maintenance/eating above
+  // (the live factor, or the frozen one if calibration is paused) — so the formula
+  // shown here always reconciles with the result shown next to it.
+  const calibrationFactor = getEffectiveCalibrationFactor(calibration);
   const phaseBmr = calcBMR(active.weightTarget, p.height, p.age, p.sex);
   const phaseAdjust = taperedAdjustment(p, active.weightTarget);
   const isTapered = p.taperDeficit && phaseAdjust !== p.deficit;
@@ -1808,8 +2039,8 @@ function renderCalcDetails(){
 
     <div class="section-title">Your inputs</div>
     <div class="card stack">
-      ${detailRow('Weight', 'Starting weight', `${fmt(p.startWeight,0)} lbs`)}
-      ${detailRow('Height', 'Entered in Setup', `${fmt(p.height,0)} in`)}
+      ${detailRow('Weight', 'Starting weight', `${fmtWeight(p.startWeight,0)} ${weightUnitLabel()}`)}
+      ${detailRow('Height', 'Entered in Setup', `${fmtHeight(p.height)} ${heightUnitLabel()}`)}
       ${detailRow('Age', 'Entered in Setup', `${fmt(p.age,0)}`)}
       ${detailRow('Sex', 'Used for the BMR formula', sexLabel)}
       ${detailRow('Activity level', 'Used for the TDEE multiplier', activityLabelMap[p.activityLevel] || p.activityLevel)}
@@ -1835,7 +2066,7 @@ function renderCalcDetails(){
     <div class="section-title">Calculated multiplier</div>
     <div class="card">
       <div class="log-entry" style="align-items:flex-start;">
-        <div class="log-note mono" style="max-width:none;">${p.tdee} cal ÷ ${fmt(p.startWeight,0)} lbs</div>
+        <div class="log-note mono" style="max-width:none;">${p.tdee} cal ÷ ${fmtWeight(p.startWeight,0)} ${weightUnitLabel()}</div>
         <div class="log-weight">${fmt(p.recommendedMultiplier)}x</div>
       </div>
       <div class="helper" style="margin-top:10px;">${p.calcMode==='multiplier' ? `You're using a manual override of ${p.multiplier}x instead of the calculated value.` : 'This is a reference number — your actual calories are calculated from TDEE, not this multiplier.'}</div>
@@ -1848,24 +2079,29 @@ function renderCalcDetails(){
     </div>
 
     <div class="section-title">Metabolic calibration</div>
-    ${calibration?.active ? `
+    ${calibrationPaused ? `
+    <div class="card">
+      <div class="helper">⏸ Paused — calorie targets are holding at a fixed ${fmt(Math.abs((calibrationFactor-1)*100),1)}% ${calibrationFactor>=1?'increase':'decrease'} instead of adjusting automatically. Your logs and trend are still tracked underneath, so resuming later picks up fresh data.</div>
+    </div>
+    ` : calibration?.active ? `
     <div class="card">
       <div class="row2">
         <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Formula estimate</div><div class="mono" style="font-weight:600; margin-top:4px;">${calibration.calcTdee} cal</div></div>
         <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Your actual pace implies</div><div class="mono" style="font-weight:600; margin-top:4px;">${calibration.actualTdee} cal</div></div>
       </div>
-      <div class="helper" style="margin-top:10px;">Based on ${calibration.avgDailyEaten} cal/day eaten vs. your weight trend, over your last ${calibration.nutritionLogs} food logs and ${calibration.weightLogs} weigh-ins spanning ${calibration.daysTracked} days (${calibration.windowDays}-day window). Your calorie targets below are adjusted ${calibrationFactor>=1?'up':'down'} by ${fmt(Math.abs((calibrationFactor-1)*100),1)}% to match your real-world results.${calibration.clamped? ' (Capped at a 25% adjustment for stability.)':''}</div>
+      <div class="helper" style="margin-top:10px;">Based on ${calibration.avgDailyEaten} cal/day eaten vs. your weight trend, over your last ${calibration.nutritionLogs} food logs and ${calibration.weightLogs} weigh-ins spanning ${calibration.daysTracked} days (${calibration.windowDays}-day window).${calibration.exerciseLogs>0? ` Also nets out ~${calibration.avgDailyExerciseCalories} cal/day of logged exercise (${calibration.exerciseLogs} entr${calibration.exerciseLogs===1?'y':'ies'} in-window, only partially counted since exercise estimates run optimistic) so an unusually active stretch doesn't get credited as a faster metabolism.` : ''} Your calorie targets below are adjusted ${calibrationFactor>=1?'up':'down'} by ${fmt(Math.abs((calibrationFactor-1)*100),1)}% to match your real-world results.${calibration.clamped? ' (Capped at a 25% adjustment for stability.)':''}</div>
     </div>
     ` : calibration && (calibration.nutritionLogsTracked>0 || calibration.daysTracked>0) ? `
     <div class="card"><div class="helper">Not active yet — needs at least ${calibration.nutritionLogsNeeded} food logs (you have ${calibration.nutritionLogsTracked}) spanning ${calibration.daysNeeded} days (you have ${calibration.daysTracked}) within a ${CALIBRATION_WINDOW_DAYS}-day window. Requiring real elapsed time, not just a log count, keeps a short noisy stretch from swinging your targets before there's a reliable trend to go on.</div></div>
     ` : `
     <div class="card"><div class="helper">Log both your weight and calories consistently for a few weeks (at least ${MIN_CALIBRATION_NUTRITION_LOGS} food logs spanning ${CALIBRATION_MIN_SPAN_DAYS} days, within a ${CALIBRATION_WINDOW_DAYS}-day window) and we'll compare your actual results to the formula estimate to fine-tune your targets.</div></div>
     `}
+    <p class="helper" style="text-align:center; margin-top:8px;">Turn automatic calibration on or off anytime from Settings → Advanced.</p>
 
-    <div class="section-title">Current phase (${fmt(active.weightTarget,0)} lbs)</div>
+    <div class="section-title">Current phase (${fmtWeight(active.weightTarget,0)} ${weightUnitLabel()})</div>
     <div class="card stack">
-      ${detailRow('Phase BMR', `Recalculated at ${fmt(active.weightTarget,0)} lbs (same formula, new weight)`, `${phaseBmr} cal`)}
-      ${detailRow('Phase TDEE', `${phaseBmr} cal × ${ACTIVITY_MULTIPLIERS[p.activityLevel]}${calibration?.active? ` × ${fmt(calibrationFactor,2)} calibration`:''}`, `${active.maintenance} cal`)}
+      ${detailRow('Phase BMR', `Recalculated at ${fmtWeight(active.weightTarget,0)} ${weightUnitLabel()} (same formula, new weight)`, `${phaseBmr} cal`)}
+      ${detailRow('Phase TDEE', `${phaseBmr} cal × ${ACTIVITY_MULTIPLIERS[p.activityLevel]}${calibrationFactor!==1? ` × ${fmt(calibrationFactor,2)} calibration${calibrationPaused?' (frozen)':''}`:''}`, `${active.maintenance} cal`)}
       ${detailRow(`Phase eating (${adjustWord})`, `${active.maintenance} cal ${goalType==='gain'?'+':goalType==='maintain'?'':'−'} ${goalType==='maintain'?'':phaseAdjust+' cal'}${isTapered?' (tapered)':''}`, `${active.eating} cal`)}
       <div class="helper" style="margin-top:2px;">This is today's target — it steps automatically as your rolling average moves into a new phase, recalculated fresh at each phase's weight rather than scaled from your starting TDEE.</div>
     </div>
@@ -1900,7 +2136,7 @@ function renderTrailSVG(phases, cw){
     if(i < activeIdx){ fill='var(--pine)'; stroke='var(--pine)'; status='Reached'; }
     else if(i === activeIdx){ fill='var(--gold)'; stroke='var(--gold)'; r=7.5; status='Current'; }
     else { fill='var(--card)'; stroke='var(--moss)'; status='Upcoming'; }
-    const label = `${status} · ${fmt(pt.ph.weightTarget,0)} lbs · ${pt.ph.eating} cal/day`;
+    const label = `${status} · ${fmtWeight(pt.ph.weightTarget,0)} ${weightUnitLabel()} · ${pt.ph.eating} cal/day`;
     return `<circle cx="${pt.x}" cy="${pt.y}" r="10" fill="transparent" style="cursor:pointer;" onmousemove="showTrailTip(event,'${label}')" onmouseleave="hideTrailTip()"></circle>
       <circle cx="${pt.x}" cy="${pt.y}" r="${r}" fill="${fill}" stroke="${stroke}" stroke-width="1.5" style="pointer-events:none;"/>`;
   }).join('');
@@ -1950,6 +2186,22 @@ function leastSquaresSlope(xs, ys){
   return { slope, intercept };
 }
 
+// Coefficient of determination (R²) for the same line leastSquaresSlope() fit: how
+// much of the variance in the weigh-ins is explained by the straight trend line,
+// vs. left over as day-to-day scatter around it. 1 = every point sits exactly on the
+// line, 0 = the line explains none of the variance (pure noise). Returns null when
+// undefined (fewer than 2 points, or every y identical so there's no variance to
+// explain in the first place).
+function computeRSquared(xs, ys, slope, intercept){
+  const n = xs.length;
+  if(n < 2) return null;
+  const meanY = ys.reduce((a,b)=>a+b,0)/n;
+  const ssTot = ys.reduce((s,y)=> s + (y-meanY)*(y-meanY), 0);
+  if(ssTot === 0) return 1;
+  const ssRes = ys.reduce((s,y,i)=> { const pred = intercept + slope*xs[i]; return s + (y-pred)*(y-pred); }, 0);
+  return Math.max(0, 1 - ssRes/ssTot);
+}
+
 function computeTrend(logs = state.weightLogs){
   logs = [...logs].sort((a,b)=> new Date(a.date)-new Date(b.date));
   if(logs.length < 2) return null;
@@ -1958,7 +2210,8 @@ function computeTrend(logs = state.weightLogs){
   const ys = logs.map(l => l.weight);
   const { slope, intercept } = leastSquaresSlope(xs, ys);
   const slopePerWeek = slope*7;
-  return { logs, xs, ys, slope, intercept, slopePerWeek };
+  const r2 = computeRSquared(xs, ys, slope, intercept);
+  return { logs, xs, ys, slope, intercept, slopePerWeek, r2 };
 }
 
 // ---------------- completion estimate ----------------
@@ -2098,26 +2351,41 @@ function renderTrendChart(){
   const { logs, ys, slope, intercept, xs, slopePerWeek } = trend;
   const n = logs.length;
   const daysSpan = xs[n-1] - xs[0];
-  const stepX = Math.max(28, Math.min(50, 340/(n-1||1)));
-  const padTop=18, padBottom=26, padLeft=14;
-  const w = Math.max(280, padLeft*2 + (n-1)*stepX);
+  // Real calendar-date x-axis (xs[i] is already "days since the first weigh-in," from
+  // computeTrend) instead of equally-spaced indexes — a logging gap now shows as an
+  // actual gap on the chart, and the trend line/projection extend by real elapsed
+  // days rather than an approximated "average spacing between points."
+  const pxPerDay = Math.max(2, Math.min(50, 340/(daysSpan||1)));
+  const padTop=18, padBottom=34, padLeft=14;
+  const w = Math.max(280, padLeft*2 + daysSpan*pxPerDay);
   const h = 150;
   const minW = Math.min(...ys), maxW = Math.max(...ys);
   const range = (maxW - minW) || 1;
   const plotTop = padTop, plotBottom = h - padBottom;
   const mapY = (val)=> plotTop + ( (maxW - val) / range ) * (plotBottom - plotTop);
-  const mapX = (i)=> padLeft + i*stepX;
+  const mapX = (dayOffset)=> padLeft + dayOffset*pxPerDay;
 
   let lineD = '';
   logs.forEach((l,i)=>{
-    const x = mapX(i), y = mapY(l.weight);
+    const x = mapX(xs[i]), y = mapY(l.weight);
     lineD += (i===0? `M ${x} ${y}` : ` L ${x} ${y}`);
   });
 
   const yStart = intercept + xs[0]*slope;
   const yEnd = intercept + xs[n-1]*slope;
-  const trendX1 = mapX(0), trendY1 = mapY(yStart);
-  const trendX2 = mapX(n-1), trendY2 = mapY(yEnd);
+  const trendX1 = mapX(xs[0]), trendY1 = mapY(yStart);
+  const trendX2 = mapX(xs[n-1]), trendY2 = mapY(yEnd);
+
+  // A handful of date tick labels along the bottom so the axis reads as real elapsed
+  // time, not just "point 1, point 2, ...". At most 5, evenly spaced by day offset
+  // (not by point index), skipped entirely on a very narrow/short-span chart.
+  const tickCount = daysSpan>=3 ? Math.min(5, Math.max(2, Math.round(w/90))) : 0;
+  const dateTicks = [];
+  for(let t=0;t<tickCount;t++){
+    const dayOffset = tickCount===1 ? 0 : (daysSpan * t/(tickCount-1));
+    const d = new Date(logs[0].date+'T00:00:00'); d.setDate(d.getDate()+Math.round(dayOffset));
+    dateTicks.push({ x: mapX(dayOffset), label: prettyDateObj(d) });
+  }
 
   // The bucket below describes literal weight movement (accurate regardless of
   // goal); the COLOR reflects whether that movement is progress toward THIS
@@ -2137,8 +2405,8 @@ function renderTrendChart(){
     const verb = goingDown ? 'Losing' : 'Gaining';
     const fast = magnitude >= 2.5;
     label = (direction==='toward' && fast)
-      ? `${verb} fast — about ${fmt(magnitude)} lbs/week`
-      : `Trending ${goingDown?'down':'up'} — about ${fmt(magnitude)} lbs/week`;
+      ? `${verb} fast — about ${fmtWeight(magnitude)} ${weightUnitLabel()}/week`
+      : `Trending ${goingDown?'down':'up'} — about ${fmtWeight(magnitude)} ${weightUnitLabel()}/week`;
     color = direction==='toward' ? (fast ? 'var(--gold)' : 'var(--pine)') : direction==='away' ? 'var(--danger)' : 'var(--moss)';
   }
   const arrowGlyph = arrow==='down' ? '&#8595;' : arrow==='up' ? '&#8593;' : '&#8594;';
@@ -2146,11 +2414,13 @@ function renderTrendChart(){
   // Daily readings are shown as light, secondary context — the dashed trend line
   // (and the Rolling weight average chart above) are the more meaningful signal.
   const dots = logs.map((l,i)=>{
-    const x = mapX(i), y = mapY(l.weight);
-    const tipLabel = `${prettyDate(l.date)} — ${fmt(l.weight)} lbs`;
+    const x = mapX(xs[i]), y = mapY(l.weight);
+    const tipLabel = `${prettyDate(l.date)} — ${fmtWeight(l.weight)} ${weightUnitLabel()}`;
     return `<circle cx="${x}" cy="${y}" r="10" fill="transparent" style="cursor:pointer;" onmousemove="showTrailTip(event,'${tipLabel}','trend-tip')" onmouseleave="hideTrailTip('trend-tip')"></circle>
       <circle cx="${x}" cy="${y}" r="2.75" fill="var(--card)" stroke="var(--moss)" stroke-width="1.2" style="pointer-events:none;"/>`;
   }).join('');
+
+  const axisLabels = dateTicks.map(t=> `<text x="${t.x}" y="${h-10}" text-anchor="middle" font-size="9.5" fill="var(--moss)" font-family="'IBM Plex Mono'">${t.label}</text>`).join('');
 
   // Goal reference line: only drawn when the goal falls within a bounded margin of
   // the plotted range, so a goal far outside current readings doesn't flatten the
@@ -2160,18 +2430,16 @@ function renderTrendChart(){
 
   // Forward projection: tied to the SAME forecastGoal() used by the Goal Forecast
   // card below (single source of truth, not a separate heuristic) — only drawn when
-  // that forecast is confident AND the goal line itself is visible. The chart's
-  // x-axis is index-spaced (not a literal date scale), so the projection's x
-  // position is approximated by converting the forecast's day-distance into the
-  // same average index-spacing as the plotted points.
+  // that forecast is confident AND the goal line itself is visible. Now that the
+  // x-axis is date-based, the projection's x position is just the forecast's real
+  // day-distance past the last point — no more approximating an "average spacing
+  // between points" to fake it.
   const forecast = showGoalLine ? WeightTrendEngine.forecastGoal(p, rollingAverageWeight(), WeightTrendEngine.analyze()) : null;
   const showProjection = !!(forecast && forecast.status==='ok' && forecast.confident);
   let projX = null;
   if(showProjection){
-    const avgDaysPerStep = daysSpan / (n-1 || 1);
     const daysUntilForecast = Math.max(0, Math.round((forecast.forecastDate - new Date())/86400000));
-    const extendedIndex = (n-1) + (avgDaysPerStep>0 ? daysUntilForecast/avgDaysPerStep : 0);
-    projX = Math.min(mapX(extendedIndex), w - padLeft*0.6);
+    projX = Math.min(mapX(xs[n-1] + daysUntilForecast), w - padLeft*0.6);
   }
 
   return `
@@ -2182,16 +2450,18 @@ function renderTrendChart(){
     <div class="trail-wrap trail-tip-wrap" style="position:relative;">
       <svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg">
         ${showGoalLine ? `<line x1="${padLeft}" y1="${goalY}" x2="${w-padLeft}" y2="${goalY}" stroke="var(--moss)" stroke-width="1.5" stroke-dasharray="3 4"/>
-        <text x="${w-padLeft}" y="${goalY-5}" text-anchor="end" font-size="10" fill="var(--moss)" font-family="'IBM Plex Mono'">Goal ${fmt(p.goalWeight,0)}</text>` : ''}
+        <text x="${w-padLeft}" y="${goalY-5}" text-anchor="end" font-size="10" fill="var(--moss)" font-family="'IBM Plex Mono'">Goal ${fmtWeight(p.goalWeight,0)}</text>` : ''}
         <path d="${lineD}" fill="none" stroke="var(--line)" stroke-width="1.5"/>
         <line x1="${trendX1}" y1="${trendY1}" x2="${trendX2}" y2="${trendY2}" stroke="${color}" stroke-width="3" stroke-dasharray="5 5" stroke-linecap="round"/>
-        ${showProjection ? `<line x1="${mapX(n-1)}" y1="${mapY(logs[n-1].weight)}" x2="${projX}" y2="${goalY}" stroke="${color}" stroke-width="2" stroke-dasharray="1.5 3.5" stroke-linecap="round" opacity="0.55"/>
+        ${showProjection ? `<line x1="${mapX(xs[n-1])}" y1="${mapY(logs[n-1].weight)}" x2="${projX}" y2="${goalY}" stroke="${color}" stroke-width="2" stroke-dasharray="1.5 3.5" stroke-linecap="round" opacity="0.55"/>
         <text x="${projX}" y="${goalY-5}" text-anchor="end" font-size="10" fill="${color}" font-family="'IBM Plex Mono'" opacity="0.85">(projected)</text>` : ''}
         ${dots}
+        <line x1="${padLeft}" y1="${plotBottom+8}" x2="${w-padLeft}" y2="${plotBottom+8}" stroke="var(--line)" stroke-width="1"/>
+        ${axisLabels}
       </svg>
       <div id="trend-tip" class="mono" style="display:none; position:absolute; pointer-events:none; background:var(--pine-dark); color:#fff; font-size:11.5px; padding:5px 9px; border-radius:8px; white-space:nowrap; transform:translate(-50%,-115%); z-index:5;"></div>
     </div>
-    <div class="trend-sub">Based on your last ${n} weigh-ins, from ${prettyDate(logs[0].date)} to ${prettyDate(logs[n-1].date)}. Daily readings are shown light — see Rolling weight average above for the smoother trend.</div>
+    <div class="trend-sub">Based on your last ${n} weigh-ins, from ${prettyDate(logs[0].date)} to ${prettyDate(logs[n-1].date)} (${Math.round(daysSpan)} day${Math.round(daysSpan)===1?'':'s'} elapsed). Daily readings are shown light — see Rolling weight average above for the smoother trend.</div>
   `;
 }
 
@@ -2261,7 +2531,7 @@ function renderRollingLineChart(logs, dateKey, valueFn, opts={}){
 }
 
 function renderRollingWeightChart(){
-  return renderRollingLineChart(state.weightLogs, 'date', l=>l.weight, {unit:' lbs', decimals:1, tipId:'rollw-tip'});
+  return renderRollingLineChart(state.weightLogs, 'date', l=>isMetricWeight()?lbsToKg(l.weight):l.weight, {unit:' '+weightUnitLabel(), decimals:1, tipId:'rollw-tip'});
 }
 
 function renderRollingCalorieChart(){
@@ -2292,18 +2562,18 @@ function renderRollingWeightInsight(){
     if(Math.abs(impliedWeeklyRate) <= 1){
       msg = `Your 7-day and 14-day averages are close together — you're holding steady right around your maintenance target.`;
     } else if(raw > 0){
-      msg = `Your 7-day average has dipped below your 14-day average — you're trending down about ${fmt(Math.abs(impliedWeeklyRate))} lbs/week. Consider adding a bit more food to stay level.`;
+      msg = `Your 7-day average has dipped below your 14-day average — you're trending down about ${fmtWeight(Math.abs(impliedWeeklyRate))} ${weightUnitLabel()}/week. Consider adding a bit more food to stay level.`;
     } else {
-      msg = `Your 7-day average has crept above your 14-day average — you're trending up about ${fmt(Math.abs(impliedWeeklyRate))} lbs/week. A small trim to calories should bring you back to level.`;
+      msg = `Your 7-day average has crept above your 14-day average — you're trending up about ${fmtWeight(Math.abs(impliedWeeklyRate))} ${weightUnitLabel()}/week. A small trim to calories should bring you back to level.`;
     }
   } else {
     const verb = goalType==='gain' ? 'gaining' : 'losing';
     if(impliedWeeklyRate < 0){
-      msg = `Your 7-day average is ${goalType==='gain'?'below':'above'} your 14-day average — recent progress has slowed or reversed slightly (about ${fmt(Math.abs(impliedWeeklyRate))} lbs/week the wrong way). Double-check you're consistently hitting your calorie target.`;
+      msg = `Your 7-day average is ${goalType==='gain'?'below':'above'} your 14-day average — recent progress has slowed or reversed slightly (about ${fmtWeight(Math.abs(impliedWeeklyRate))} ${weightUnitLabel()}/week the wrong way). Double-check you're consistently hitting your calorie target.`;
     } else if(impliedWeeklyRate > 3){
-      msg = `You're ${verb} faster than your recent baseline — about ${fmt(impliedWeeklyRate)} lbs/week over the last week. That's ahead of the typical 1–2 lb/week pace; consider ${goalType==='gain'?'trimming back slightly':'adding 100–200 calories'} to keep it sustainable.`;
+      msg = `You're ${verb} faster than your recent baseline — about ${fmtWeight(impliedWeeklyRate)} ${weightUnitLabel()}/week over the last week. That's ahead of the typical 1–2 lb/week pace; consider ${goalType==='gain'?'trimming back slightly':'adding 100–200 calories'} to keep it sustainable.`;
     } else if(impliedWeeklyRate >= 1){
-      msg = `Nice momentum — your 7-day average is pulling your 14-day average ${goalType==='gain'?'up':'down'} at a solid ~${fmt(impliedWeeklyRate)} lbs/week.`;
+      msg = `Nice momentum — your 7-day average is pulling your 14-day average ${goalType==='gain'?'up':'down'} at a solid ~${fmtWeight(impliedWeeklyRate)} ${weightUnitLabel()}/week.`;
     } else {
       msg = `Your 7-day and 14-day averages are nearly flat against each other — progress has slowed to under a pound a week. If this continues, consider adjusting your calorie target.`;
     }
@@ -2316,7 +2586,7 @@ function renderRollingWeightInsight(){
       if(distance > 0){
         const completion = estimateCompletion();
         const etaNote = completion.status==='ok' && completion.phaseDate ? `, estimated around ${prettyDateObj(completion.phaseDate)} at your current pace` : '';
-        msg += ` You're ${fmt(distance,1)} lbs from your next calorie step at ${fmt(active.weightTarget,0)} lbs${etaNote}.`;
+        msg += ` You're ${fmtWeight(distance,1)} ${weightUnitLabel()} from your next calorie step at ${fmtWeight(active.weightTarget,0)} ${weightUnitLabel()}${etaNote}.`;
       }
     }
   }
@@ -2327,26 +2597,46 @@ function renderRollingWeightInsight(){
 function renderWeeklyInsight(){
   const logs = [...state.weightLogs].sort((a,b)=> new Date(a.date)-new Date(b.date));
   if(logs.length < 4) return '';
-  const now = new Date();
-  const withinDays = (d, days)=> (now - new Date(d)) / 86400000 <= days;
+  const p = state.profile;
+  const goalType = p.goalType || 'loss';
+  // Local-midnight "today" (same idiom as todayStr()) compared against dates also
+  // parsed as local midnight — comparing a bare `new Date()` (real wall-clock) against
+  // `new Date(dateString)` (parsed as UTC midnight) could shift a borderline weigh-in
+  // into the wrong 7-day bucket for timezones behind UTC.
+  const today = new Date(todayStr()+'T00:00:00');
+  const withinDays = (d, days)=> (today - new Date(d+'T00:00:00')) / 86400000 <= days;
   const last7 = logs.filter(l=> withinDays(l.date,7));
-  const prev7 = logs.filter(l=> { const days = (now-new Date(l.date))/86400000; return days>7 && days<=14; });
+  const prev7 = logs.filter(l=> { const days = (today-new Date(l.date+'T00:00:00'))/86400000; return days>7 && days<=14; });
   if(last7.length<2 || prev7.length<2) return '';
   const avg = arr => arr.reduce((s,l)=>s+l.weight,0)/arr.length;
-  const rate = avg(prev7) - avg(last7); // positive = losing week-over-week
-  let msg, tone='pine-tint';
-  if(rate > 3){ msg = `You're averaging about ${fmt(rate)} lbs/week — faster than the ideal 1–2 lbs. Consider adding 100–200 calories to protect your energy and muscle.`; }
-  else if(rate >= 1){ msg = `Great pace — you're averaging about ${fmt(rate)} lbs/week, right in the ideal 1–2 lb range. Keep going.`; }
-  else if(rate > 0){ msg = `Progress has slowed to about ${fmt(rate)} lbs/week. If this continues for a few more weeks, consider a small calorie cut or adding activity.`; }
-  else { msg = `Your weight hasn't moved much this week. That's normal short-term — keep logging and watch the weekly trend.`; }
+  const rawWeeklyChange = avg(last7) - avg(prev7); // positive = weight increased week-over-week
+
+  let msg;
+  if(goalType==='maintain'){
+    const drift = -rawWeeklyChange; // positive = trending down, negative = trending up
+    if(Math.abs(drift) <= 1){ msg = `You're averaging about ${fmtWeight(Math.abs(drift))} ${weightUnitLabel()}/week of drift — holding steady right around your maintenance target.`; }
+    else { msg = `You're trending ${drift>0?'down':'up'} about ${fmtWeight(Math.abs(drift))} ${weightUnitLabel()}/week this week. If this continues, consider a small calorie ${drift>0?'increase':'decrease'} to come back to level.`; }
+  } else {
+    // Normalized so positive always means "toward this profile's goal" (same
+    // convention as renderRollingWeightInsight/WeightTrendEngine) — otherwise a
+    // gain-goal user successfully gaining reads as "hasn't moved," and one who's
+    // accidentally losing reads as "great pace, keep going."
+    const rate = normalizeToGoalProgress(rawWeeklyChange, goalType);
+    const verb = goalType==='gain' ? 'gaining' : 'losing';
+    if(rate > 3){ msg = `You're averaging about ${fmtWeight(rate)} ${weightUnitLabel()}/week ${verb} — faster than the ideal 1–2 lbs. Consider ${goalType==='gain'?'trimming back slightly':'adding 100–200 calories'} to protect your energy and muscle.`; }
+    else if(rate >= 1){ msg = `Great pace — you're averaging about ${fmtWeight(rate)} ${weightUnitLabel()}/week ${verb}, right in the ideal 1–2 lb range. Keep going.`; }
+    else if(rate > 0){ msg = `Progress has slowed to about ${fmtWeight(rate)} ${weightUnitLabel()}/week. If this continues for a few more weeks, consider a small calorie ${goalType==='gain'?'increase':'cut'} or adjusting activity.`; }
+    else { msg = `Your weight ${rate<0 ? 'moved the wrong way' : "hasn't moved much"} this week. That's normal short-term — keep logging and watch the weekly trend.`; }
+  }
 
   // This 2-week snapshot can visibly disagree with the longer-history Weight trend
   // chart if a single unusual weigh-in falls inside one of the 7-day windows — flag
   // it rather than leave two contradictory-looking numbers unexplained on the page.
   const trend = computeTrend();
   if(trend){
-    const longTermRate = -trend.slopePerWeek; // same sign convention as `rate` (positive = losing)
-    if(Math.abs(rate - longTermRate) > 2){
+    const longTermRate = goalType==='maintain' ? -trend.slopePerWeek : normalizeToGoalProgress(trend.slopePerWeek, goalType);
+    const shortTermRate = goalType==='maintain' ? -rawWeeklyChange : normalizeToGoalProgress(rawWeeklyChange, goalType);
+    if(Math.abs(shortTermRate - longTermRate) > 2){
       msg += ` (Your longer-term Weight trend below tells a different story — a single unusual weigh-in in the last two weeks can skew this short-term number.)`;
     }
   }
@@ -2391,6 +2681,15 @@ const PROGRESS_CHECK_TOLERANCE_FLOOR = 0.3;
 // sharply from the chosen currentTrend, say so — same reconciliation-note pattern
 // already shipped above in renderWeeklyInsight (Math.abs(rate-longTermRate)>2).
 const TREND_DIVERGENCE_THRESHOLD = 2;
+// R² above this reads as "steady" (the trend line explains most of the scatter),
+// below as "variable" — deliberately not a high bar: real day-to-day weight
+// fluctuation (water, salt, GI contents) keeps even a genuinely consistent trend's R²
+// well under 1, so demanding e.g. 0.8 would call almost everyone "variable."
+const TREND_CONSISTENCY_R2_THRESHOLD = 0.5;
+// Below this average logs/week, a dataset is too gappy for R² to say much about
+// day-to-day consistency either way (a few scattered points over a long span can
+// post a deceptively high OR low R²) — trendConsistency() bows out to null instead.
+const TREND_CONSISTENCY_MIN_LOGS_PER_WEEK = 1;
 
 const WeightTrendEngine = {
   analyze(weightLogs = state.weightLogs){
@@ -2403,9 +2702,10 @@ const WeightTrendEngine = {
     const currentTrend = this.pickWindow(windows, [14,7,30]);
     const forecastBasisWindow = this.pickWindow(windows, [30,14,7]);
     const confidence = this.trendConfidence(weightLogs, overall);
+    const consistency = this.trendConsistency(weightLogs, overall);
     const { forecastRatePerWeek, forecastStatus } = this.calculateForecastRate(forecastBasisWindow, overall, currentTrend, confidence);
     const divergenceNote = this.divergenceNote(windows[7], currentTrend);
-    return { windows, overall, currentTrend, forecastBasisWindow, confidence, forecastRatePerWeek, forecastStatus, divergenceNote };
+    return { windows, overall, currentTrend, forecastBasisWindow, confidence, consistency, forecastRatePerWeek, forecastStatus, divergenceNote };
   },
 
   // First window in `order` that has enough data, tagged with which window it is.
@@ -2414,12 +2714,37 @@ const WeightTrendEngine = {
     return null;
   },
 
+  // "Is there enough history to trust a projection" — purely count/span-based (same
+  // thresholds as estimateCompletion()/computeCalibration()). Deliberately NOT based
+  // on R²: a short, scattered dataset and a short, razor-straight one are equally
+  // unproven, so statistical fit alone isn't the gate here. See trendConsistency()
+  // below for the separate "how closely do the points track the line" read.
   trendConfidence(weightLogs, overall){
     if(weightLogs.length < MIN_COMPLETION_POINTS || !overall) return 'insufficient';
     const sorted = [...weightLogs].sort((a,b)=> new Date(a.date)-new Date(b.date));
     const spanDays = (new Date(sorted[sorted.length-1].date) - new Date(sorted[0].date))/86400000;
     if(spanDays < MIN_TREND_SPAN_DAYS) return 'insufficient';
     return spanDays >= MIN_GOAL_TRACKING_DAYS ? 'established' : 'emerging';
+  },
+
+  // 'steady' | 'variable' | null — a SEPARATE axis from trendConfidence() above: a
+  // dataset can be "established" (plenty of history) and still "variable" (a lot of
+  // day-to-day scatter around that history's trend), so the two aren't collapsed into
+  // one score. Reuses the same overall-regression R² already computed by
+  // computeTrend() rather than a second pass over the logs. Gated behind the same
+  // count/span floor as trendConfidence() (an R² from 3 points isn't meaningful) PLUS
+  // a logging-density floor, so a few scattered logs across a long gappy stretch
+  // report null ("not enough regular logging to tell") instead of a falsely
+  // confident reading either way — this is the "missing data" factor the plain R²
+  // number alone wouldn't catch.
+  trendConsistency(weightLogs, overall){
+    if(weightLogs.length < MIN_COMPLETION_POINTS || !overall || overall.r2==null) return null;
+    const sorted = [...weightLogs].sort((a,b)=> new Date(a.date)-new Date(b.date));
+    const spanDays = (new Date(sorted[sorted.length-1].date) - new Date(sorted[0].date))/86400000;
+    if(spanDays < MIN_TREND_SPAN_DAYS) return null;
+    const logsPerWeek = weightLogs.length / ((spanDays/7) || 1);
+    if(logsPerWeek < TREND_CONSISTENCY_MIN_LOGS_PER_WEEK) return null;
+    return overall.r2 >= TREND_CONSISTENCY_R2_THRESHOLD ? 'steady' : 'variable';
   },
 
   // Always picks whichever of {forecast-basis window, full history} is SLOWER, in
@@ -2527,7 +2852,7 @@ function renderTrendStrip(){
   const direction = getGoalProgressDirection(currentTrend.slopePerWeek, goalType);
   const color = direction==='toward' ? 'var(--pine)' : direction==='away' ? 'var(--danger)' : 'var(--moss)';
   const arrowGlyph = goingDown ? '&#8595;' : goingUp ? '&#8593;' : '&#8594;';
-  const rateText = (!goingDown && !goingUp) ? 'Roughly flat this stretch' : `Trending ${goingDown?'down':'up'}, about ${fmt(magnitude)} lbs/week`;
+  const rateText = (!goingDown && !goingUp) ? 'Roughly flat this stretch' : `Trending ${goingDown?'down':'up'}, about ${fmtWeight(magnitude)} ${weightUnitLabel()}/week`;
 
   const sortedDesc = [...state.weightLogs].sort((a,b)=> new Date(b.date)-new Date(a.date));
   const staleness = isStaleLastLog(sortedDesc) ? ` (as of ${prettyDate(sortedDesc[0].date)})` : '';
@@ -2574,6 +2899,14 @@ function renderWeightTrendCard(){
     emerging: { badge:'badge-current', text:'Emerging trend', note:'Your trend is becoming clearer as you add more weigh-ins.' },
     established: { badge:'badge-reached', text:'Established trend', note:'Your current trend is based on enough data to provide a useful estimate.' },
   }[analysis.confidence];
+  // A separate read from the confidence badge above: confidence is "how much history
+  // do we have," consistency is "how closely do your actual weigh-ins track that
+  // history's trend line" (R² of the overall regression). A dataset can be
+  // established and still variable, or emerging and already quite steady.
+  const consistencyCopy = {
+    steady: { badge:'badge-reached', text:'Steady', note:'Your weigh-ins track your overall trend closely — day-to-day bounce is small relative to the trend itself.' },
+    variable: { badge:'badge-current', text:'Variable', note:'Your weigh-ins bounce around your overall trend more than usual — the direction above is still your best estimate, just read it as a range rather than a precise number.' },
+  }[analysis.consistency] || null;
 
   const windowCell = (days)=>{
     const win = analysis.windows[days];
@@ -2586,8 +2919,10 @@ function renderWeightTrendCard(){
 
   return `
     <span class="badge ${confidenceCopy.badge}">${confidenceCopy.text}</span>
+    ${consistencyCopy ? `<span class="badge ${consistencyCopy.badge}" style="margin-left:6px;">${consistencyCopy.text}</span>` : ''}
     <div class="trend-window-grid">${windowCell(7)}${windowCell(14)}${windowCell(30)}</div>
     <div class="helper" style="margin-top:10px;">${confidenceCopy.note}</div>
+    ${consistencyCopy ? `<div class="helper" style="margin-top:4px;">${consistencyCopy.note}</div>` : ''}
     ${analysis.divergenceNote ? `<div class="helper">${analysis.divergenceNote}</div>` : ''}
     <div class="helper" style="margin-top:6px;">These are full-regression trends over each window — Weekly insight and Rolling weight average below use simpler week-over-week comparisons for a quicker gut-check, so the numbers won't always match exactly.</div>
   `;
@@ -2626,8 +2961,8 @@ function renderGoalForecastCard(){
     <div class="section-title">Goal forecast</div>
     <div class="card">
       <div class="row2">
-        <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Goal</div><div class="mono" style="font-weight:600; margin-top:4px;">${fmt(p.goalWeight,0)} lbs</div></div>
-        <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Remaining</div><div class="mono" style="font-weight:600; margin-top:4px;">${fmt(remaining,1)} lbs</div></div>
+        <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Goal</div><div class="mono" style="font-weight:600; margin-top:4px;">${fmtWeight(p.goalWeight,0)} ${weightUnitLabel()}</div></div>
+        <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Remaining</div><div class="mono" style="font-weight:600; margin-top:4px;">${fmtWeight(remaining,1)} ${weightUnitLabel()}</div></div>
       </div>
       ${body}
       <div class="helper" style="margin-top:8px;">Projected, not promised — daily readings bounce around and this updates as you log more.</div>
@@ -2668,8 +3003,8 @@ function renderProgressCheckCard(){
     <div class="section-title">Progress check</div>
     <div class="card">
       <div class="row2">
-        <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Plan</div><div class="mono" style="font-weight:600; margin-top:4px;">${fmt(planRatePerWeek)} lbs/week</div></div>
-        <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Actual trend</div><div class="mono" style="font-weight:600; margin-top:4px;">${fmt(Math.abs(actualRatePerWeek))} lbs/week</div></div>
+        <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Plan</div><div class="mono" style="font-weight:600; margin-top:4px;">${fmtWeight(planRatePerWeek)} ${weightUnitLabel()}/week</div></div>
+        <div><div class="k" style="font-size:11px;color:var(--moss);text-transform:uppercase;">Actual trend</div><div class="mono" style="font-weight:600; margin-top:4px;">${fmtWeight(Math.abs(actualRatePerWeek))} ${weightUnitLabel()}/week</div></div>
       </div>
       <div class="helper" style="margin-top:10px;">${statusCopy[check.status]}</div>
       <div class="helper" style="margin-top:4px;">This is informational — we won't change your calorie target from this alone.</div>
@@ -2705,10 +3040,10 @@ function renderMilestoneBreadcrumb(){
   const sortedMilestones = [...state.milestones].sort((a,b)=> dir>0 ? a.weight-b.weight : b.weight-a.weight);
   const avgW = rollingAverageWeight();
   const stops = [
-    { label: `${fmt(p.startWeight,0)} lbs`, sub: 'Starting point', kind:'reached' },
-    ...sortedMilestones.map(m=> ({ label: `${fmt(m.weight,0)} lbs`, sub: 'Reached', kind:'reached' })),
-    { label: `${fmt(avgW,0)} lbs`, sub: 'You are here', kind:'current' },
-    { label: `${fmt(p.goalWeight,0)} lbs`, sub: 'Current goal', kind:'upcoming' },
+    { label: `${fmtWeight(p.startWeight,0)} ${weightUnitLabel()}`, sub: 'Starting point', kind:'reached' },
+    ...sortedMilestones.map(m=> ({ label: `${fmtWeight(m.weight,0)} ${weightUnitLabel()}`, sub: 'Reached', kind:'reached' })),
+    { label: `${fmtWeight(avgW,0)} ${weightUnitLabel()}`, sub: 'You are here', kind:'current' },
+    { label: `${fmtWeight(p.goalWeight,0)} ${weightUnitLabel()}`, sub: 'Current goal', kind:'upcoming' },
   ];
   return `
     <div class="section-title">Journey milestones</div>
@@ -2731,13 +3066,15 @@ function renderRoadmap(){
   const avgW = rollingAverageWeight();
   const active = getActivePhase(phases, avgW);
   const calibration = hasBodyStats(p) ? computeCalibration() : null;
+  const calibrationPaused = (p.calibrationMode||'auto')==='paused';
+  const effectiveCalibrationFactor = getEffectiveCalibrationFactor(calibration);
   const notes = [];
-  if(calibration?.active) notes.push(`calorie targets below are calibrated ${calibration.calibrationFactor>=1?'up':'down'} ${fmt(Math.abs((calibration.calibrationFactor-1)*100),1)}% based on your logged results`);
+  if(effectiveCalibrationFactor!==1) notes.push(`calorie targets below are calibrated ${effectiveCalibrationFactor>=1?'up':'down'} ${fmt(Math.abs((effectiveCalibrationFactor-1)*100),1)}% ${calibrationPaused?'(paused — held at this fixed adjustment)':'based on your logged results'}`);
   if(p.taperDeficit) notes.push(`${(p.goalType||'loss')==='gain'?'surplus':'deficit'} tapers by up to 40% over the final third of your journey`);
   const el = document.getElementById('view-roadmap');
   el.innerHTML = `
     <h1 class="page-title">Roadmap</h1>
-    <p class="page-sub">${phases.length} phases from ${fmt(p.startWeight,0)} to ${fmt(p.goalWeight,0)} lbs, stepping every ${p.interval} lbs. Progress is based on your ${Math.min(state.weightLogs.length, ROLLING_WINDOW)}-log rolling average of ${fmt(avgW)} lbs.</p>
+    <p class="page-sub">${phases.length} phases from ${fmt(p.startWeight,0)} to ${fmtWeight(p.goalWeight,0)} ${weightUnitLabel()}, stepping every ${p.interval} lbs. Progress is based on your ${Math.min(state.weightLogs.length, ROLLING_WINDOW)}-log rolling average of ${fmtWeight(avgW)} ${weightUnitLabel()}.</p>
     ${notes.length ? `<div class="banner" style="margin-bottom:16px;">📐 <div>${notes.join('; ')}.</div></div>` : ''}
     ${renderMilestoneBreadcrumb()}
     <div class="stack">
@@ -2752,7 +3089,7 @@ function renderRoadmap(){
           <div class="phase-left">
             <div class="phase-dot" style="background:${dotColor};"></div>
             <div>
-              <div class="phase-target">${fmt(ph.weightTarget,0)} lbs</div>
+              <div class="phase-target">${fmtWeight(ph.weightTarget,0)} ${weightUnitLabel()}</div>
               <div class="phase-cals">${ph.eating} cal/day · maintenance ${ph.maintenance}</div>
               <div class="phase-cals">~waist <span class="measure">${size.waist}</span> · ${size.shirt}</div>
             </div>
@@ -2776,7 +3113,7 @@ function renderLog(){
   const active = getActivePhase(phases, rollingAverageWeight());
   const proteinGoal = calcProteinGoal(p, rollingAverageWeight());
 
-  const dates = new Set([...state.weightLogs.map(l=>l.date), ...state.nutritionLogs.map(n=>n.date)]);
+  const dates = new Set([...state.weightLogs.map(l=>l.date), ...state.nutritionLogs.map(n=>n.date), ...(state.exerciseLogs||[]).map(e=>e.date)]);
   const sortedDates = [...dates].sort((a,b)=> new Date(b)-new Date(a));
 
   if(activityDraftMeals.length===0) activityDraftMeals = [emptyMealRow()];
@@ -2801,7 +3138,7 @@ function renderLog(){
             <input type="date" id="act-date" value="${todayStr()}">
           </div>
           <div class="field" style="margin-bottom:0;">
-            <label>Weight (lbs)</label>
+            <label>Weight (${weightUnitLabel()})</label>
             <input type="number" id="act-weight" placeholder="optional" inputmode="decimal">
           </div>
         </div>
@@ -2837,6 +3174,15 @@ function renderLog(){
             </div>
           </div>
         </details>
+        <details class="advanced-details"${activityDraftExercise.length ? ' open' : ''}>
+          <summary>Exercise <span style="font-weight:400; color:var(--moss);">(optional)</span></summary>
+          <div style="margin-top:12px;">
+            <div class="chip-group meal-quick-add" id="act-ex-quick-add">
+              ${EXERCISE_TYPES.map(t=>`<div class="chip" data-type="${t}">+ ${t}</div>`).join('')}
+            </div>
+            <div id="act-exercise"></div>
+          </div>
+        </details>
         <div class="field" style="margin-bottom:0;">
           <label>Notes (optional)</label>
           <textarea id="act-notes" placeholder="Feeling good, workout completed…"></textarea>
@@ -2844,6 +3190,7 @@ function renderLog(){
         <button class="btn btn-primary" id="btn-act-save">Save entry</button>
       </div>
     </details>
+    <button type="button" class="btn-link" id="btn-open-bulk" style="display:block; margin:4px 0 0;">+ Add multiple days at once</button>
 
     <div class="section-title">History</div>
     ${sortedDates.length? `<div class="stack">${sortedDates.map(date=> date===editingActivityDate ? renderActivityEditRow(date) : renderActivityRow(date)).join('')}</div>` : `<div class="empty-state">No entries yet. Log today's numbers above.</div>`}
@@ -2860,10 +3207,17 @@ function renderLog(){
     chip.onclick = ()=> quickAddMeal('new', chip.dataset.cat);
   });
   document.getElementById('act-food-search-btn').onclick = ()=> openFoodSearch('new');
+  document.getElementById('btn-open-bulk').onclick = openBulkEntry;
+
+  renderExerciseRows('act-exercise', activityDraftExercise, 'new');
+  bindExerciseHandlers('new');
+  document.querySelectorAll('#act-ex-quick-add .chip').forEach(chip=>{
+    chip.onclick = ()=> quickAddExercise('new', chip.dataset.type);
+  });
 
   document.getElementById('btn-act-save').onclick = async ()=>{
     const date = document.getElementById('act-date').value || todayStr();
-    const weightVal = parseFloat(document.getElementById('act-weight').value);
+    const weightVal = weightInputToLbs(parseFloat(document.getElementById('act-weight').value));
     const protein = parseFloat(document.getElementById('act-protein').value) || 0;
     const carbs = parseFloat(document.getElementById('act-carbs').value) || 0;
     const fat = parseFloat(document.getElementById('act-fat').value) || 0;
@@ -2872,15 +3226,19 @@ function renderLog(){
     const meals = activityDraftMeals
       .filter(m=> parseFloat(m.calories)>0)
       .map(m=>({id:m.id||cryptoId(), label: MEAL_CATEGORIES.includes(m.label)?m.label:'Other', calories: parseFloat(m.calories)||0, ...(m.foodName?{foodName:m.foodName}:{})}));
+    const exercise = activityDraftExercise
+      .filter(r=> parseFloat(r.durationMin)>0)
+      .map(r=>({id:r.id||cryptoId(), type: EXERCISE_TYPES.includes(r.type)?r.type:'Other', durationMin: parseFloat(r.durationMin)||0, caloriesBurned: parseFloat(r.caloriesBurned)||0}));
 
     const hasWeight = weightVal > 0;
     const hasMeals = meals.length > 0;
-    if(!hasWeight && !hasMeals){ showToast('Enter a weight or at least one calorie entry.'); return; }
+    const hasExercise = exercise.length > 0;
+    if(!hasWeight && !hasMeals && !hasExercise){ showToast('Enter a weight, a calorie entry, or an exercise entry.'); return; }
 
     if(hasWeight){
       const existingSameDate = state.weightLogs.find(l=>l.date===date);
       const outlier = findWeightOutlier(weightVal, date, existingSameDate?.id);
-      if(outlier && !confirm(`That's ${fmt(outlier.diff,1)} lbs from your last entry (${fmt(outlier.mostRecent.weight)} lbs on ${prettyDate(outlier.mostRecent.date)}). Save ${fmt(weightVal)} lbs anyway?`)){
+      if(outlier && !confirm(`That's ${fmtWeight(outlier.diff,1)} ${weightUnitLabel()} from your last entry (${fmtWeight(outlier.mostRecent.weight)} ${weightUnitLabel()} on ${prettyDate(outlier.mostRecent.date)}). Save ${fmtWeight(weightVal)} ${weightUnitLabel()} anyway?`)){
         return;
       }
     }
@@ -2897,14 +3255,23 @@ function renderLog(){
       state.nutritionLogs = state.nutritionLogs.filter(n=>n.date!==date);
       state.nutritionLogs.push({id:cryptoId(), date, meals, protein, carbs, fat, water});
     }
+    if(hasExercise){
+      state.exerciseLogs = state.exerciseLogs.filter(e=>e.date!==date);
+      state.exerciseLogs.push({id:cryptoId(), date, activities:exercise});
+    }
     await saveState();
     activityDraftMeals = [emptyMealRow()];
+    activityDraftExercise = [];
 
     if(hasWeight){
-      const activeAfter = getActivePhase(phasesBefore, rollingAverageWeight());
+      // Recomputed fresh — the entry just saved can itself shift the metabolic
+      // calibration factor, which would otherwise make this toast's "updated to Y"
+      // number stale vs. what the dashboard shows a moment later. See quickLogEntry().
+      const phasesAfter = computePhases(state.profile);
+      const activeAfter = getActivePhase(phasesAfter, rollingAverageWeight());
       const goalAfter = isGoalReached();
       if(goalAfter && !goalBefore){
-        showToast(`🎉 Goal reached! You hit your target weight of ${fmt(state.profile.goalWeight,0)} lbs.`);
+        showToast(`🎉 Goal reached! You hit your target weight of ${fmtWeight(state.profile.goalWeight,0)} ${weightUnitLabel()}.`);
       } else if(activeAfter.id !== activeBefore.id){
         showToast(`🏁 Milestone reached! Calorie target updated from ${activeBefore.eating} to ${activeAfter.eating}.`);
       } else {
@@ -2929,6 +3296,11 @@ function renderLog(){
       chip.onclick = ()=> quickAddMeal('edit', chip.dataset.cat);
     });
     document.getElementById('eact-food-search-btn').onclick = ()=> openFoodSearch('edit');
+    renderExerciseRows('eact-exercise', editActivityDraftExercise, 'edit');
+    bindExerciseHandlers('edit');
+    document.querySelectorAll('#eact-ex-quick-add .chip').forEach(chip=>{
+      chip.onclick = ()=> quickAddExercise('edit', chip.dataset.type);
+    });
     document.getElementById('eact-save').onclick = ()=> saveEditActivity(editingActivityDate);
     document.getElementById('eact-cancel').onclick = ()=> { editingActivityDate = null; renderLog(); };
   }
@@ -3004,6 +3376,217 @@ function bindMealHandlers(mode){
       bindMealHandlers(mode);
     };
   });
+}
+
+// ---------------- exercise logging ----------------
+// Mirrors the meals draft-array pattern above (activityDraftMeals/editActivityDraftMeals):
+// an in-memory array per form, re-rendered only on add/remove so typing doesn't lose
+// focus. Unlike meals, there's no default blank row — most days have none logged.
+function emptyExerciseRow(type){ return {id:cryptoId(), type: type||'Walk', durationMin:'', caloriesBurned:''}; }
+function exerciseCaloriesTotal(rows){ return (rows||[]).reduce((s,r)=> s + (parseFloat(r.caloriesBurned)||0), 0); }
+
+function quickAddExercise(mode, type){
+  const arr = mode==='new' ? activityDraftExercise : editActivityDraftExercise;
+  const row = emptyExerciseRow(type);
+  arr.push(row);
+  const containerId = mode==='new' ? 'act-exercise' : 'eact-exercise';
+  renderExerciseRows(containerId, arr, mode);
+  bindExerciseHandlers(mode);
+  const input = document.querySelector(`#${containerId} input.ex-duration[data-ex-id="${row.id}"]`);
+  if(input) input.focus();
+}
+
+function renderExerciseRows(containerId, rows, mode){
+  const el = document.getElementById(containerId);
+  if(!el) return;
+  if(!rows.length){
+    el.innerHTML = `<div class="helper">No exercise logged for this day — tap a type above to add one.</div>`;
+    return;
+  }
+  el.innerHTML = rows.map(r=>`
+    <div style="margin-bottom:10px;">
+      <select class="ex-type" data-ex-id="${r.id}" style="margin-bottom:6px;">
+        ${EXERCISE_TYPES.map(t=>`<option value="${t}" ${r.type===t?'selected':''}>${t}</option>`).join('')}
+      </select>
+      <div style="display:flex; gap:6px; align-items:center;">
+        <input type="number" class="ex-duration" data-ex-id="${r.id}" placeholder="Minutes" inputmode="decimal" value="${r.durationMin===''||r.durationMin==null?'':r.durationMin}" style="flex:1;">
+        <input type="number" class="ex-cal" data-ex-id="${r.id}" placeholder="Cal burned (optional)" inputmode="decimal" value="${r.caloriesBurned===''||r.caloriesBurned==null?'':r.caloriesBurned}" style="flex:1;">
+        <button type="button" class="del-btn ex-remove" data-ex-id="${r.id}" aria-label="Remove entry">✕</button>
+      </div>
+    </div>
+  `).join('') + `<div class="helper">Estimated calories burned are used as supporting context only — never treated as exact.</div>`;
+}
+
+function bindExerciseHandlers(mode){
+  const containerId = mode==='new' ? 'act-exercise' : 'eact-exercise';
+  const container = document.getElementById(containerId);
+  if(!container) return;
+  const arr = mode==='new' ? activityDraftExercise : editActivityDraftExercise;
+
+  container.querySelectorAll('.ex-type').forEach(sel=>{
+    sel.onchange = ()=>{ const r = arr.find(x=>x.id===sel.dataset.exId); if(r) r.type = sel.value; };
+  });
+  container.querySelectorAll('.ex-duration').forEach(inp=>{
+    inp.oninput = ()=>{ const r = arr.find(x=>x.id===inp.dataset.exId); if(r) r.durationMin = inp.value; };
+  });
+  container.querySelectorAll('.ex-cal').forEach(inp=>{
+    inp.oninput = ()=>{ const r = arr.find(x=>x.id===inp.dataset.exId); if(r) r.caloriesBurned = inp.value; };
+  });
+  container.querySelectorAll('.ex-remove').forEach(btn=>{
+    btn.onclick = ()=>{
+      const newArr = arr.filter(r=>r.id!==btn.dataset.exId);
+      if(mode==='new') activityDraftExercise = newArr; else editActivityDraftExercise = newArr;
+      renderExerciseRows(containerId, newArr, mode);
+      bindExerciseHandlers(mode);
+    };
+  });
+}
+
+// ---------------- bulk historical entry ----------------
+// A separate multi-day screen for back-filling a logging gap faster than one day at a
+// time via the single-day form above. Each row is independent (date, optional weight,
+// optional calories); blank fields are left blank — never guessed — and nothing is
+// written to state until "Save all" passes validation. Intentionally does NOT run the
+// single-entry findWeightOutlier() guard per row: that guard exists to catch likely
+// TYPOS against the most recent entry, but back-filling real history is expected to
+// span larger, legitimate jumps between distant dates, and popping a confirm() per row
+// would make a bulk save unusable.
+let bulkEntryRows = [];
+
+function emptyBulkRow(date){ return { id:cryptoId(), date: date||'', weight:'', calories:'' }; }
+
+function openBulkEntry(){
+  bulkEntryRows = [emptyBulkRow(), emptyBulkRow(), emptyBulkRow()];
+  document.getElementById('bulk-overlay').classList.remove('hidden');
+  renderBulkEntryOverlay();
+}
+function closeBulkEntry(){
+  document.getElementById('bulk-overlay').classList.add('hidden');
+}
+
+function bulkRowMarkup(r){
+  return `
+    <div data-bulk-row="${r.id}" style="padding:12px 0; border-top:1px solid var(--line);">
+      <div class="row2" style="align-items:flex-end;">
+        <div class="field" style="margin-bottom:0;">
+          <label>Date</label>
+          <input type="date" class="bulk-date" data-id="${r.id}" value="${escapeHtml(r.date)}">
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Weight (${weightUnitLabel()})</label>
+          <input type="number" class="bulk-weight" data-id="${r.id}" placeholder="optional" inputmode="decimal" value="${escapeHtml(r.weight)}">
+        </div>
+      </div>
+      <div style="display:flex; gap:8px; align-items:flex-end; margin-top:8px;">
+        <div class="field" style="margin-bottom:0; flex:1;">
+          <label>Calories</label>
+          <input type="number" class="bulk-calories" data-id="${r.id}" placeholder="optional" inputmode="decimal" value="${escapeHtml(r.calories)}">
+        </div>
+        <button type="button" class="del-btn bulk-remove" data-id="${r.id}" aria-label="Remove row">✕</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderBulkEntryOverlay(){
+  const body = document.getElementById('bulk-overlay-body');
+  body.innerHTML = `
+    <p class="page-sub">Log weight and/or calories for several past days at once. Leave a field blank if you don't know it — nothing is guessed, and you can review everything before saving.</p>
+    <div class="card" id="bulk-rows" style="padding-top:4px;">
+      ${bulkEntryRows.map(r=> bulkRowMarkup(r)).join('')}
+    </div>
+    <button type="button" class="btn btn-ghost" id="bulk-add-row" style="margin-top:10px;">+ Add another day</button>
+    <div id="bulk-error" class="helper" style="color:var(--danger); display:none; margin-top:10px;"></div>
+    <button class="btn btn-primary" id="bulk-save" style="margin-top:14px;">Save all</button>
+  `;
+  bindBulkEntryHandlers();
+}
+
+function bindBulkEntryHandlers(){
+  document.querySelectorAll('.bulk-date').forEach(inp=>{
+    inp.oninput = ()=>{ const r = bulkEntryRows.find(x=>x.id===inp.dataset.id); if(r) r.date = inp.value; };
+  });
+  document.querySelectorAll('.bulk-weight').forEach(inp=>{
+    inp.oninput = ()=>{ const r = bulkEntryRows.find(x=>x.id===inp.dataset.id); if(r) r.weight = inp.value; };
+  });
+  document.querySelectorAll('.bulk-calories').forEach(inp=>{
+    inp.oninput = ()=>{ const r = bulkEntryRows.find(x=>x.id===inp.dataset.id); if(r) r.calories = inp.value; };
+  });
+  document.querySelectorAll('.bulk-remove').forEach(btn=>{
+    btn.onclick = ()=>{
+      bulkEntryRows = bulkEntryRows.filter(r=>r.id!==btn.dataset.id);
+      if(bulkEntryRows.length===0) bulkEntryRows = [emptyBulkRow()];
+      renderBulkEntryOverlay();
+    };
+  });
+  document.getElementById('bulk-add-row').onclick = ()=>{
+    bulkEntryRows.push(emptyBulkRow());
+    renderBulkEntryOverlay();
+  };
+  document.getElementById('bulk-save').onclick = saveBulkEntry;
+}
+
+function bulkEntryError(msg){
+  const errEl = document.getElementById('bulk-error');
+  errEl.textContent = msg;
+  errEl.style.display = 'block';
+}
+
+async function saveBulkEntry(){
+  document.getElementById('bulk-error').style.display = 'none';
+
+  // Rows with no date and no values are just unused blank rows — ignore them rather
+  // than forcing the user to delete empty rows before saving.
+  const candidates = bulkEntryRows.filter(r=> r.date || r.weight!=='' || r.calories!=='');
+  if(candidates.length===0){ bulkEntryError('Add at least one day before saving.'); return; }
+
+  const missingDate = candidates.find(r=> !r.date);
+  if(missingDate){ bulkEntryError('Every row with a weight or calorie value needs a date.'); return; }
+
+  // Duplicate dates WITHIN this batch — distinct from the overwrite-existing-data
+  // check below, which is about dates that were already saved in a previous session.
+  const seen = new Set();
+  for(const r of candidates){
+    if(seen.has(r.date)){ bulkEntryError(`You entered ${prettyDate(r.date)} more than once — combine it into a single row before saving.`); return; }
+    seen.add(r.date);
+  }
+
+  for(const r of candidates){
+    if(r.weight!=='' && !(weightInputToLbs(parseFloat(r.weight))>0)){ bulkEntryError(`${prettyDate(r.date)}: enter a valid weight, or leave it blank.`); return; }
+    if(r.calories!=='' && !(parseFloat(r.calories)>=0)){ bulkEntryError(`${prettyDate(r.date)}: enter a valid calorie amount, or leave it blank.`); return; }
+  }
+
+  const rowsWithWeight = candidates.filter(r=> r.weight!=='');
+  const rowsWithCalories = candidates.filter(r=> r.calories!=='');
+  if(rowsWithWeight.length===0 && rowsWithCalories.length===0){ bulkEntryError('Each row needs a weight, a calorie amount, or both.'); return; }
+
+  // Overwrite-confirmation: one combined prompt listing every date that already has
+  // saved data, rather than silently clobbering it or popping a confirm per row.
+  const conflictDates = new Set();
+  rowsWithWeight.forEach(r=>{ if(state.weightLogs.some(l=>l.date===r.date)) conflictDates.add(r.date); });
+  rowsWithCalories.forEach(r=>{ if(state.nutritionLogs.some(n=>n.date===r.date)) conflictDates.add(r.date); });
+  if(conflictDates.size){
+    const list = [...conflictDates].sort().map(d=>prettyDate(d)).join(', ');
+    if(!confirm(`This will overwrite existing entries for: ${list}. Continue?`)) return;
+  }
+
+  rowsWithWeight.forEach(r=>{
+    state.weightLogs = state.weightLogs.filter(l=>l.date!==r.date);
+    state.weightLogs.push({id:cryptoId(), date:r.date, weight: weightInputToLbs(parseFloat(r.weight)), notes:''});
+  });
+  rowsWithCalories.forEach(r=>{
+    const existing = state.nutritionLogs.find(n=>n.date===r.date);
+    state.nutritionLogs = state.nutritionLogs.filter(n=>n.date!==r.date);
+    state.nutritionLogs.push({
+      id:cryptoId(), date:r.date, meals:[{id:cryptoId(), label:'Other', calories:parseFloat(r.calories)}],
+      protein: existing?existing.protein:0, carbs: existing?existing.carbs:0, fat: existing?existing.fat:0, water: existing?existing.water:0,
+    });
+  });
+
+  await saveState();
+  closeBulkEntry();
+  showToast(`Saved ${candidates.length} day${candidates.length===1?'':'s'}.`);
+  renderAll();
 }
 
 // ---------------- food search (Open Food Facts) ----------------
@@ -3475,8 +4058,13 @@ function addFoodToMeal(){
 function renderActivityRow(date){
   const w = state.weightLogs.find(l=>l.date===date);
   const n = state.nutritionLogs.find(x=>x.date===date);
+  const ex = (state.exerciseLogs||[]).find(x=>x.date===date);
   const totalCals = n ? nutritionTotalCalories(n) : 0;
   const mealCount = n && n.meals ? n.meals.length : 0;
+  const exCals = ex ? exerciseCaloriesTotal(ex.activities) : 0;
+  const exBits = ex && ex.activities && ex.activities.length
+    ? ex.activities.map(a=> `${a.type} ${a.durationMin}min${a.caloriesBurned?` (~${a.caloriesBurned} cal)`:''}`).join(' · ')
+    : '';
   const macroBits = n && (n.protein||n.carbs||n.fat||n.water) ? `${n.protein?`${n.protein}g protein`:''}${n.carbs? ` · ${n.carbs}g carbs`:''}${n.fat? ` · ${n.fat}g fat`:''}${n.water? ` · ${n.water}oz water`:''}` : '';
   const isToday = date===todayStr();
   return `
@@ -3492,17 +4080,19 @@ function renderActivityRow(date){
           </button>
         </div>
       </div>
-      ${w || n ? `<div class="log-stats">
-        ${w? `<div><div class="log-weight">${fmt(w.weight)} lbs</div><div class="log-stat-label">weight</div></div>` : ''}
+      ${w || n || ex ? `<div class="log-stats">
+        ${w? `<div><div class="log-weight">${fmtWeight(w.weight)} ${weightUnitLabel()}</div><div class="log-stat-label">weight</div></div>` : ''}
         ${n? `<div><div class="log-weight">${totalCals} cal</div><div class="log-stat-label">calories${mealCount>1? ` · ${mealCount} entries`:''}</div></div>` : ''}
+        ${ex? `<div><div class="log-weight">🏃 ${exCals>0?`${exCals} cal`:ex.activities.length+(ex.activities.length===1?' activity':' activities')}</div><div class="log-stat-label">exercise</div></div>` : ''}
       </div>` : ''}
-      ${macroBits || (w && w.notes) ? `<div class="log-note">${[macroBits, w && w.notes ? escapeHtml(w.notes) : ''].filter(Boolean).join('<br>')}</div>` : ''}
+      ${exBits || macroBits || (w && w.notes) ? `<div class="log-note">${[exBits, macroBits, w && w.notes ? escapeHtml(w.notes) : ''].filter(Boolean).join('<br>')}</div>` : ''}
     </div>`;
 }
 
 function renderActivityEditRow(date){
   const w = state.weightLogs.find(l=>l.date===date);
   const n = state.nutritionLogs.find(x=>x.date===date);
+  const ex = (state.exerciseLogs||[]).find(x=>x.date===date);
   return `
     <div class="log-edit-card">
       <div class="row2">
@@ -3511,8 +4101,8 @@ function renderActivityEditRow(date){
           <input type="date" id="eact-date" value="${date}">
         </div>
         <div class="field" style="margin-bottom:0;">
-          <label>Weight (lbs)</label>
-          <input type="number" id="eact-weight" value="${w?w.weight:''}" inputmode="decimal">
+          <label>Weight (${weightUnitLabel()})</label>
+          <input type="number" id="eact-weight" value="${w?fmtWeight(w.weight):''}" inputmode="decimal">
         </div>
       </div>
       <div class="field" style="margin-bottom:0; margin-top:12px;">
@@ -3547,6 +4137,15 @@ function renderActivityEditRow(date){
           </div>
         </div>
       </details>
+      <details class="advanced-details" style="margin-top:12px;"${ex && ex.activities && ex.activities.length ? ' open' : ''}>
+        <summary>Exercise <span style="font-weight:400; color:var(--moss);">(optional)</span></summary>
+        <div style="margin-top:12px;">
+          <div class="chip-group meal-quick-add" id="eact-ex-quick-add">
+            ${EXERCISE_TYPES.map(t=>`<div class="chip" data-type="${t}">+ ${t}</div>`).join('')}
+          </div>
+          <div id="eact-exercise"></div>
+        </div>
+      </details>
       <div class="field" style="margin-bottom:0; margin-top:12px;">
         <label>Notes</label>
         <textarea id="eact-notes">${escapeHtml((w&&w.notes)||'')}</textarea>
@@ -3565,12 +4164,16 @@ function startEditActivity(date){
   editActivityDraftMeals = n && n.meals && n.meals.length
     ? n.meals.map(m=>({id:m.id||cryptoId(), label: MEAL_CATEGORIES.includes(m.label)?m.label:'Other', calories:m.calories, ...(m.foodName?{foodName:m.foodName}:{})}))
     : [emptyMealRow()];
+  const ex = (state.exerciseLogs||[]).find(x=>x.date===date);
+  editActivityDraftExercise = ex && ex.activities && ex.activities.length
+    ? ex.activities.map(r=>({id:r.id||cryptoId(), type: EXERCISE_TYPES.includes(r.type)?r.type:'Other', durationMin:r.durationMin, caloriesBurned:r.caloriesBurned}))
+    : [];
   renderLog();
 }
 
 async function saveEditActivity(originalDate){
   const date = document.getElementById('eact-date').value;
-  const weightVal = parseFloat(document.getElementById('eact-weight').value);
+  const weightVal = weightInputToLbs(parseFloat(document.getElementById('eact-weight').value));
   const protein = parseFloat(document.getElementById('eact-protein').value) || 0;
   const carbs = parseFloat(document.getElementById('eact-carbs').value) || 0;
   const fat = parseFloat(document.getElementById('eact-fat').value) || 0;
@@ -3579,16 +4182,20 @@ async function saveEditActivity(originalDate){
   const meals = editActivityDraftMeals
     .filter(m=> parseFloat(m.calories)>0)
     .map(m=>({id:m.id||cryptoId(), label: MEAL_CATEGORIES.includes(m.label)?m.label:'Other', calories: parseFloat(m.calories)||0, ...(m.foodName?{foodName:m.foodName}:{})}));
+  const exercise = editActivityDraftExercise
+    .filter(r=> parseFloat(r.durationMin)>0)
+    .map(r=>({id:r.id||cryptoId(), type: EXERCISE_TYPES.includes(r.type)?r.type:'Other', durationMin: parseFloat(r.durationMin)||0, caloriesBurned: parseFloat(r.caloriesBurned)||0}));
 
   if(!date){ showToast('Enter a valid date.'); return; }
   const hasWeight = weightVal > 0;
   const hasMeals = meals.length > 0;
-  if(!hasWeight && !hasMeals){ showToast('Enter a weight or at least one calorie entry.'); return; }
+  const hasExercise = exercise.length > 0;
+  if(!hasWeight && !hasMeals && !hasExercise){ showToast('Enter a weight, a calorie entry, or an exercise entry.'); return; }
 
   if(hasWeight){
     const existingId = state.weightLogs.find(l=>l.date===originalDate)?.id;
     const outlier = findWeightOutlier(weightVal, date, existingId);
-    if(outlier && !confirm(`That's ${fmt(outlier.diff,1)} lbs from your last entry (${fmt(outlier.mostRecent.weight)} lbs on ${prettyDate(outlier.mostRecent.date)}). Save ${fmt(weightVal)} lbs anyway?`)){
+    if(outlier && !confirm(`That's ${fmtWeight(outlier.diff,1)} ${weightUnitLabel()} from your last entry (${fmtWeight(outlier.mostRecent.weight)} ${weightUnitLabel()} on ${prettyDate(outlier.mostRecent.date)}). Save ${fmtWeight(weightVal)} ${weightUnitLabel()} anyway?`)){
       return;
     }
   }
@@ -3596,8 +4203,10 @@ async function saveEditActivity(originalDate){
   // clear both the original date and the (possibly new) target date, then re-add
   state.weightLogs = state.weightLogs.filter(l=> l.date!==originalDate && l.date!==date);
   state.nutritionLogs = state.nutritionLogs.filter(n=> n.date!==originalDate && n.date!==date);
+  state.exerciseLogs = state.exerciseLogs.filter(e=> e.date!==originalDate && e.date!==date);
   if(hasWeight) state.weightLogs.push({id:cryptoId(), date, weight:weightVal, notes});
   if(hasMeals) state.nutritionLogs.push({id:cryptoId(), date, meals, protein, carbs, fat, water});
+  if(hasExercise) state.exerciseLogs.push({id:cryptoId(), date, activities:exercise});
 
   editingActivityDate = null;
   await saveState();
@@ -3609,16 +4218,29 @@ async function deleteActivity(date){
   if(editingActivityDate===date) editingActivityDate = null;
   const removedWeight = state.weightLogs.filter(l=>l.date===date);
   const removedNutrition = state.nutritionLogs.filter(n=>n.date===date);
-  if(!removedWeight.length && !removedNutrition.length) return;
+  const removedExercise = (state.exerciseLogs||[]).filter(e=>e.date===date);
+  if(!removedWeight.length && !removedNutrition.length && !removedExercise.length) return;
   state.weightLogs = state.weightLogs.filter(l=>l.date!==date);
   state.nutritionLogs = state.nutritionLogs.filter(n=>n.date!==date);
+  state.exerciseLogs = state.exerciseLogs.filter(e=>e.date!==date);
   await saveState();
   renderAll();
   showToast("Entry deleted.", { actionLabel:'Undo', duration:5000, onAction: async ()=>{
-    state.weightLogs.push(...removedWeight);
-    state.nutritionLogs.push(...removedNutrition);
+    // Guard against a new entry having been logged for this date in the meantime
+    // (e.g. delete today's entry, quick-log a new one, then hit Undo) — restoring
+    // unconditionally would create two logs sharing the same date, breaking the
+    // "one entry per date" invariant the rolling average / trend math relies on.
+    const weightConflict = state.weightLogs.some(l=>l.date===date);
+    const nutritionConflict = state.nutritionLogs.some(n=>n.date===date);
+    const exerciseConflict = state.exerciseLogs.some(e=>e.date===date);
+    if(!weightConflict) state.weightLogs.push(...removedWeight);
+    if(!nutritionConflict) state.nutritionLogs.push(...removedNutrition);
+    if(!exerciseConflict) state.exerciseLogs.push(...removedExercise);
     await saveState();
     renderAll();
+    if(weightConflict || nutritionConflict || exerciseConflict){
+      showToast('Restored what we could — a new entry already exists for that date.');
+    }
   }});
 }
 
@@ -3642,12 +4264,12 @@ function renderSettings(){
         </div>
         <div class="row2">
           <div class="field" style="margin-bottom:0;">
-            <label>Starting weight (lbs)</label>
-            <input type="number" id="s-current" value="${p.startWeight||''}">
+            <label>Starting weight (${weightUnitLabel()})</label>
+            <input type="number" id="s-current" value="${p.startWeight ? fmtWeight(p.startWeight) : ''}">
           </div>
           <div class="field" style="margin-bottom:0;">
-            <label>Height (inches)</label>
-            <input type="number" id="s-height" value="${p.height||''}">
+            <label>Height (${heightUnitLabel()})</label>
+            <input type="number" id="s-height" value="${p.height ? fmtHeight(p.height) : ''}">
           </div>
         </div>
         <div class="helper" style="margin-top:8px;">This is the baseline your roadmap was built from, not necessarily today's weight — log day-to-day weigh-ins from the Log tab instead.</div>
@@ -3683,8 +4305,8 @@ function renderSettings(){
           </div>
         </div>
         <div class="field" id="s-goal-weight-field" style="margin-bottom:0;">
-          <label>Goal weight (lbs)</label>
-          <input type="number" id="s-goal" value="${p.goalWeight||''}">
+          <label>Goal weight (${weightUnitLabel()})</label>
+          <input type="number" id="s-goal" value="${p.goalWeight ? fmtWeight(p.goalWeight) : ''}">
         </div>
       </div>
 
@@ -3725,7 +4347,7 @@ function renderSettings(){
           <div class="field">
             <label>Adjust every</label>
             <div class="chip-group" id="s-grp-interval">
-              ${[5,10].map(v=>`<div class="chip ${(p.interval||5)==v?'active':''}" data-val="${v}">${v} lbs</div>`).join('')}
+              ${[5,10].map(v=>`<div class="chip ${(p.interval||5)==v?'active':''}" data-val="${v}">${fmtWeight(v,1)} ${weightUnitLabel()}</div>`).join('')}
             </div>
           </div>
           <div class="field" style="margin-bottom:0;">
@@ -3736,11 +4358,19 @@ function renderSettings(){
             </div>
             <div class="helper">Gradually eases your deficit/surplus by up to 40% over the final third of your journey.</div>
           </div>
+          <div class="field" style="margin-bottom:0;">
+            <label>Metabolic calibration</label>
+            <div class="chip-group" id="s-grp-calibmode">
+              <div class="chip ${(p.calibrationMode||'auto')==='auto'?'active':''}" data-val="auto">Automatic</div>
+              <div class="chip ${p.calibrationMode==='paused'?'active':''}" data-val="paused">Paused</div>
+            </div>
+            <div class="helper">${p.calibrationMode==='paused' ? `Holding your calorie target steady at its current calibrated value instead of adjusting as new logs come in. Your data and trend keep tracking underneath — switch back to Automatic anytime to pick up fresh results.` : `Automatically fine-tunes your calorie targets to match your real logged results. Pause it if you want your current number to hold steady for a while (e.g. before a trip) without turning calibration off for good.`}</div>
+          </div>
         </div>
       </div>
 
       <button class="btn btn-primary" id="btn-save-settings">Save changes</button>
-      <div id="s-goal-error" class="helper" style="color:var(--danger); display:none;">Goal weight must be at least 5 lbs from your current weight, in the right direction for your goal type.</div>
+      <div id="s-goal-error" class="helper" style="color:var(--danger); display:none;">Goal weight must be at least ${fmtWeight(5,1)} ${weightUnitLabel()} from your current weight, in the right direction for your goal type.</div>
     </div>
 
     <div class="section-title">Food search</div>
@@ -3774,7 +4404,7 @@ function renderSettings(){
         <tbody>
           ${sizeTable.map(row=>`
             <tr class="mono" style="border-top:1px solid var(--line);">
-              <td class="measure" style="padding:6px 6px 6px 0;">${row.weight} lbs</td>
+              <td class="measure" style="padding:6px 6px 6px 0;">${fmtWeight(row.weight,0)} ${weightUnitLabel()}</td>
               <td class="measure" style="padding:6px;">${row.shirt}</td>
               <td class="measure" style="padding:6px;">${isFemale ? row.pants : rangeOrDash(row.pantsLow, row.pantsHigh)}</td>
               <td class="measure" style="padding:${isFemale ? '6px' : '6px 0 6px 6px'};">${rangeOrDash(row.waistLow, row.waistHigh)}"</td>
@@ -3789,10 +4419,49 @@ function renderSettings(){
       })()}
     </div>
 
+    <div class="section-title">Units</div>
+    <div class="card stack">
+      <div class="field" style="margin-bottom:0;">
+        <label>Weight</label>
+        <div class="chip-group" id="s-grp-weightunit">
+          <div class="chip ${!isMetricWeight()?'active':''}" data-val="lbs">Pounds (lbs)</div>
+          <div class="chip ${isMetricWeight()?'active':''}" data-val="kg">Kilograms (kg)</div>
+        </div>
+      </div>
+      <div class="field" style="margin-bottom:0;">
+        <label>Height</label>
+        <div class="chip-group" id="s-grp-heightunit">
+          <div class="chip ${!isMetricHeight()?'active':''}" data-val="in">Inches (in)</div>
+          <div class="chip ${isMetricHeight()?'active':''}" data-val="cm">Centimeters (cm)</div>
+        </div>
+      </div>
+      <div class="helper">Only changes how numbers are shown and entered — your saved weight and height stay exactly as logged.</div>
+    </div>
+
+    <div class="section-title">Daily reminder</div>
+    <div class="card stack">
+      <div class="field" style="margin-bottom:0;">
+        <label>Remind me to log</label>
+        <div class="chip-group" id="s-grp-reminder">
+          <div class="chip ${!state.reminderPrefs.enabled?'active':''}" data-val="off">Off</div>
+          <div class="chip ${state.reminderPrefs.enabled?'active':''}" data-val="on">On</div>
+        </div>
+      </div>
+      <div class="field" id="s-reminder-time-field" style="margin-bottom:0; ${state.reminderPrefs.enabled?'':'opacity:0.45;'}">
+        <label>Time</label>
+        <input type="time" id="s-reminder-time" value="${state.reminderPrefs.time||'19:00'}" ${state.reminderPrefs.enabled?'':'disabled'}>
+      </div>
+      <div class="helper">Shows a reminder banner right on the Trail tab if you haven't logged by this time, and a device notification too when your browser allows it (not guaranteed if the app/browser is fully closed — the on-screen banner is the one to count on). Doesn't affect your logging streak either way.</div>
+    </div>
+
     <div class="section-title">Data</div>
     <div class="row2">
       <button class="btn btn-ghost" id="btn-export">Export data</button>
       <button class="btn btn-ghost" id="btn-import">Import data</button>
+    </div>
+    <div class="row2" style="margin-top:10px;">
+      <button class="btn btn-ghost" id="btn-export-csv">Export CSV</button>
+      <div></div>
     </div>
     <input type="file" id="import-file-input" accept="application/json" class="hidden">
     <button class="btn btn-danger" id="btn-reset" style="margin-top:10px;">Reset all data</button>
@@ -3834,6 +4503,66 @@ function renderSettings(){
   document.getElementById('s-height').addEventListener('input', refresh);
   document.getElementById('s-age').addEventListener('input', refresh);
   document.getElementById('s-deficit-custom').addEventListener('input', refresh);
+
+  // Unit toggles: only change how numbers are shown/typed — nothing in state.profile
+  // is touched — so a full renderAll() (not just this tab) is needed: the Dashboard,
+  // Roadmap, and Log tabs are rendered once and left in the DOM until something
+  // re-renders them (goTab() just toggles visibility), so without this they'd keep
+  // showing the old unit until some unrelated action happened to refresh them.
+  document.querySelectorAll('#s-grp-weightunit .chip').forEach(chip=>{
+    chip.onclick = async ()=>{
+      state.unitPrefs.weight = chip.dataset.val;
+      await saveState();
+      renderAll();
+    };
+  });
+  document.querySelectorAll('#s-grp-heightunit .chip').forEach(chip=>{
+    chip.onclick = async ()=>{
+      state.unitPrefs.height = chip.dataset.val;
+      await saveState();
+      renderAll();
+    };
+  });
+
+  // Calibration mode is an immediate action (not deferred to "Save changes" like the
+  // rest of this card): pausing must capture the LIVE factor at this exact moment,
+  // before any later log changes it, so the frozen value actually matches what was
+  // showing right before the pause.
+  document.querySelectorAll('#s-grp-calibmode .chip').forEach(chip=>{
+    chip.onclick = async ()=>{
+      const mode = chip.dataset.val;
+      if(mode==='paused' && state.profile.calibrationMode!=='paused'){
+        const live = computeCalibration();
+        state.profile.frozenCalibrationFactor = live?.active ? live.calibrationFactor : 1;
+      }
+      state.profile.calibrationMode = mode;
+      await saveState();
+      showToast(mode==='paused' ? 'Calibration paused — your calorie target will hold steady.' : 'Calibration resumed.');
+      renderAll();
+    };
+  });
+
+  document.querySelectorAll('#s-grp-reminder .chip').forEach(chip=>{
+    chip.onclick = async ()=>{
+      const enabled = chip.dataset.val==='on';
+      state.reminderPrefs.enabled = enabled;
+      if(enabled && typeof Notification !== 'undefined' && Notification.permission==='default'){
+        try{ await Notification.requestPermission(); }catch(e){ /* banner fallback still works */ }
+      }
+      await saveState();
+      startReminderScheduler();
+      renderAll();
+    };
+  });
+  const reminderTimeInput = document.getElementById('s-reminder-time');
+  if(reminderTimeInput){
+    reminderTimeInput.onchange = async ()=>{
+      state.reminderPrefs.time = reminderTimeInput.value || '19:00';
+      state.reminderPrefs.lastNotifiedDate = null; // a new time today should be able to fire again
+      await saveState();
+      renderAll();
+    };
+  }
 
   document.getElementById('s-advanced-toggle').onclick = ()=>{
     const body = document.getElementById('s-advanced-body');
@@ -3889,6 +4618,7 @@ function renderSettings(){
   };
 
   document.getElementById('btn-export').onclick = exportData;
+  document.getElementById('btn-export-csv').onclick = exportDataCSV;
   document.getElementById('btn-import').onclick = ()=> document.getElementById('import-file-input').click();
   document.getElementById('import-file-input').onchange = (e)=>{
     const file = e.target.files[0];
@@ -3898,7 +4628,7 @@ function renderSettings(){
 
   document.getElementById('btn-reset').onclick = async ()=>{
     if(!confirm('This will erase your profile and weight history from this device. Continue?')) return;
-    state = { profile:null, weightLogs:[], nutritionLogs:[], ackPhaseId:null, milestones:[] };
+    state = freshState();
     await saveState();
     boot();
   };
@@ -3956,9 +4686,165 @@ async function boot(){
     renderAll();
     goTab(activeTab);
   }
+  startReminderScheduler();
+}
+
+// ---------------- self-tests ----------------
+// Lightweight in-page test harness — this app has no build step/test runner, so this
+// runs real assertions against the actual functions above, directly in the browser,
+// rather than adding an external test framework as a new dependency. Opt-in via
+// ?selftest=1 so it never runs for a normal user. Snapshots and restores `state`
+// around the run (several tests below intentionally mutate weightLogs/profile/etc. to
+// set up scenarios) so running this against real data leaves it untouched.
+function assertClose(actual, expected, tolerance, label, results){
+  const pass = typeof actual==='number' && !isNaN(actual) && Math.abs(actual-expected) <= tolerance;
+  results.push({ label, pass, detail: `expected ~${expected} (±${tolerance}), got ${actual}` });
+}
+function assertTrue(cond, label, results, detail){
+  results.push({ label, pass: !!cond, detail: detail||String(cond) });
+}
+function assertEqual(actual, expected, label, results){
+  const pass = actual===expected;
+  results.push({ label, pass, detail: `expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}` });
+}
+
+function runSelfTests(){
+  const results = [];
+  const stateSnapshot = JSON.parse(JSON.stringify(state));
+  const unitPrefsSnapshot = JSON.parse(JSON.stringify(state.unitPrefs));
+
+  try{
+    // --- unit conversion ---
+    assertClose(lbsToKg(220.5), 100, 0.1, 'lbsToKg(220.5) ≈ 100kg', results);
+    assertClose(kgToLbs(lbsToKg(187)), 187, 0.001, 'kg->lbs round-trip', results);
+    assertClose(inToCm(cmToIn(177.8)), 177.8, 0.001, 'cm->in round-trip', results);
+    state.unitPrefs = {weight:'kg', height:'cm'};
+    assertEqual(fmtWeight(220.5,0), '100', 'fmtWeight converts to kg when metric', results);
+    assertEqual(weightUnitLabel(), 'kg', 'weightUnitLabel reflects metric pref', results);
+    state.unitPrefs = {weight:'lbs', height:'in'};
+    assertEqual(fmtWeight(100,0), '100', 'fmtWeight stays lbs when imperial', results);
+
+    // --- CSV escaping ---
+    assertEqual(csvEscape('plain'), 'plain', 'csvEscape leaves plain text alone', results);
+    assertEqual(csvEscape('a,b'), '"a,b"', 'csvEscape quotes a comma', results);
+    assertEqual(csvEscape('say "hi"'), '"say ""hi"""', 'csvEscape doubles internal quotes', results);
+    assertEqual(csvEscape(null), '', 'csvEscape turns null into empty string', results);
+
+    // --- R² ---
+    const perfectXs=[0,1,2,3,4], perfectYs=[200,199,198,197,196];
+    const { slope:ps, intercept:pi } = leastSquaresSlope(perfectXs, perfectYs);
+    assertClose(computeRSquared(perfectXs, perfectYs, ps, pi), 1, 0.001, 'R² = 1 for an exact line', results);
+    const flatXs=[0,1,2,3,4], flatYs=[200,200,200,200,200];
+    const { slope:fs, intercept:fi } = leastSquaresSlope(flatXs, flatYs);
+    assertEqual(computeRSquared(flatXs, flatYs, fs, fi), 1, 'R² = 1 for zero-variance data (no scatter to explain)', results);
+
+    // --- renderWeeklyInsight goal-awareness (Bug #1) ---
+    function dstr(offset){ const d=new Date(); d.setDate(d.getDate()+offset); return d.toISOString().slice(0,10); }
+    state.profile = { name:'t', startWeight:200, goalWeight:220, height:70, age:30, sex:'male', activityLevel:'moderate', goalType:'gain', multiplier:12, recommendedMultiplier:12, bmr:1800, tdee:2500, calcMode:'auto', deficit:500, interval:5, taperDeficit:false, createdDate: dstr(-30) };
+    state.weightLogs = []; state.nutritionLogs = []; state.exerciseLogs = []; state.milestones = [];
+    // gain-goal user LOSING weight (wrong direction) — must not say "great pace, keep going"
+    for(let i=13;i>=0;i--) state.weightLogs.push({id:'wi'+i, date: dstr(-i), weight: 200 - (13-i)*0.3, notes:''});
+    const wrongDirMsg = renderWeeklyInsight();
+    assertTrue(!/Great pace/.test(wrongDirMsg), 'gain-goal losing weight is not praised as "great pace"', results, wrongDirMsg);
+    assertTrue(/wrong way|hasn.t moved/.test(wrongDirMsg), 'gain-goal losing weight reads as off-track', results, wrongDirMsg);
+    // gain-goal user GAINING weight (right direction) — should be encouraging, not "hasn't moved"
+    state.weightLogs = [];
+    for(let i=13;i>=0;i--) state.weightLogs.push({id:'wi'+i, date: dstr(-i), weight: 200 + (13-i)*0.3, notes:''});
+    const rightDirMsg = renderWeeklyInsight();
+    assertTrue(!/hasn.t moved much/.test(rightDirMsg), 'gain-goal gaining weight is not read as stalled', results, rightDirMsg);
+
+    // --- milestone progress bar degenerate case (Bug #2) ---
+    state.profile = Object.assign({}, state.profile, { goalType:'loss', startWeight:200, goalWeight:180, interval:5 });
+    state.weightLogs = [{id:'deg1', date: dstr(0), weight:202, notes:''}]; // 2 lbs ABOVE start
+    {
+      const p = state.profile, phases = computePhases(p), avgW = rollingAverageWeight();
+      const active = getActivePhase(phases, avgW);
+      const activeIdx = phases.findIndex(ph=>ph.id===active.id);
+      const prevTarget = activeIdx>0 ? phases[activeIdx-1].weightTarget : p.startWeight;
+      const segmentGap = Math.abs(active.weightTarget - prevTarget);
+      const segmentTotal = segmentGap > 0.01 ? segmentGap : (p.interval || 1);
+      const segmentProgressed = segmentGap > 0.01 ? Math.max(0, Math.abs(avgW - prevTarget)) : 0;
+      const pct = Math.max(0, Math.min(100, (segmentProgressed/segmentTotal)*100));
+      assertEqual(pct, 0, 'milestone bar reads 0% (not false 100%) when above start weight', results);
+    }
+
+    // --- clothing size tie-break (Bug #5) ---
+    {
+      let tiePair = null;
+      for(let i=0;i<FEMALE_SIZE_TABLE.length-1;i++){
+        if(FEMALE_SIZE_TABLE[i].shirt !== FEMALE_SIZE_TABLE[i+1].shirt){ tiePair = [FEMALE_SIZE_TABLE[i], FEMALE_SIZE_TABLE[i+1]]; break; }
+      }
+      if(tiePair){
+        const mid = (tiePair[0].weight + tiePair[1].weight)/2;
+        const res = estimateSizeForWeight(mid, 'female');
+        assertEqual(res.shirt, tiePair[1].shirt, 'exact-midpoint tie resolves to the larger size', results);
+      }
+    }
+
+    // --- exercise-aware calibration ---
+    state.profile = Object.assign({}, state.profile, { goalType:'loss', startWeight:200, goalWeight:180 });
+    state.weightLogs = []; state.nutritionLogs = []; state.exerciseLogs = [];
+    for(let i=27;i>=0;i--){
+      state.weightLogs.push({id:'cw'+i, date: dstr(-i), weight: 200 - (27-i)*0.2, notes:''});
+      state.nutritionLogs.push({id:'cn'+i, date: dstr(-i), meals:[{id:'cm'+i, label:'Other', calories:2200}], protein:0,carbs:0,fat:0,water:0});
+    }
+    const calBefore = computeCalibration();
+    for(let i=10;i>=0;i--) state.exerciseLogs.push({id:'ce'+i, date: dstr(-i), activities:[{id:'cea'+i, type:'Run', durationMin:45, caloriesBurned:500}]});
+    const calAfter = computeCalibration();
+    assertTrue(calAfter.calibrationFactor < calBefore.calibrationFactor, 'logged exercise lowers the calibration factor (not misread as faster metabolism)', results, `${calBefore.calibrationFactor} -> ${calAfter.calibrationFactor}`);
+    assertTrue(calAfter.avgDailyExerciseCalories > 0, 'calibration diagnostic reports avgDailyExerciseCalories', results);
+
+    // --- calibration pause/resume ---
+    state.profile.calibrationMode = 'paused';
+    state.profile.frozenCalibrationFactor = calAfter.calibrationFactor;
+    const phasesPausedA = computePhases(state.profile);
+    state.nutritionLogs.push({id:'extra', date: dstr(0), meals:[{id:'mx',label:'Other',calories:4000}], protein:0,carbs:0,fat:0,water:0});
+    const phasesPausedB = computePhases(state.profile);
+    assertEqual(phasesPausedA[0].eating, phasesPausedB[0].eating, 'paused calibration holds steady across new logs', results);
+    state.profile.calibrationMode = 'auto';
+    const phasesResumed = computePhases(state.profile);
+    assertTrue(phasesResumed[0].eating !== phasesPausedA[0].eating || computeCalibration().calibrationFactor===state.profile.frozenCalibrationFactor, 'resuming calibration re-reads the live factor', results);
+
+    // --- date-based trend chart accounts for gaps ---
+    state.weightLogs = [
+      {id:'g1', date: dstr(-25), weight:202, notes:''},
+      {id:'g2', date: dstr(-24), weight:201.8, notes:''},
+      {id:'g3', date: dstr(-2), weight:197, notes:''},
+      {id:'g4', date: dstr(-1), weight:196.8, notes:''},
+    ];
+    {
+      const html = renderTrendChart();
+      const xs = [...html.matchAll(/<circle cx="([\d.]+)" cy="[\d.]+" r="2.75"/g)].map(m=>parseFloat(m[1]));
+      const gapSpacing = xs[2]-xs[1], denseSpacing = xs[1]-xs[0];
+      assertTrue(xs.length===4 && gapSpacing > denseSpacing*5, 'trend chart x-axis spaces a 22-day gap much wider than consecutive days', results, `spacings: ${denseSpacing}, ${gapSpacing}`);
+    }
+
+    // --- exerciseCaloriesTotal / nutritionTotalCalories sanity ---
+    assertEqual(exerciseCaloriesTotal([{caloriesBurned:100},{caloriesBurned:'50'},{caloriesBurned:''}]), 150, 'exerciseCaloriesTotal sums numeric fields, ignores blanks', results);
+
+  } finally {
+    state = stateSnapshot;
+    state.unitPrefs = unitPrefsSnapshot;
+    saveState();
+    renderAll();
+  }
+
+  const failed = results.filter(r=>!r.pass);
+  console.log(`Self-tests: ${results.length-failed.length}/${results.length} passed`);
+  console.table(results.map(r=>({pass: r.pass?'✓':'✗', label:r.label, detail:r.detail})));
+  const box = document.createElement('div');
+  box.style.cssText = 'position:fixed; inset:12px; background:#fff; z-index:9999; overflow:auto; padding:16px; border-radius:12px; box-shadow:0 4px 24px rgba(0,0,0,0.3); font-family:monospace; font-size:12px;';
+  box.innerHTML = `<h2 style="margin:0 0 10px;">Self-tests: ${results.length-failed.length}/${results.length} passed</h2>` +
+    results.map(r=> `<div style="padding:4px 0; color:${r.pass?'#2B6355':'#B4553F'};">${r.pass?'✓':'✗'} ${r.label}${r.pass?'':` — ${r.detail}`}</div>`).join('') +
+    `<button onclick="this.parentElement.remove()" style="margin-top:12px;">Close</button>`;
+  document.body.appendChild(box);
+  return { total: results.length, failed: failed.length, results };
 }
 
 boot();
+if(new URLSearchParams(location.search).get('selftest')==='1'){
+  setTimeout(runSelfTests, 300);
+}
 </script>
 </body>
 </html>
