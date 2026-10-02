@@ -2375,7 +2375,14 @@ function renderTrendChart(){
   const padTop=18, padBottom=34, padLeft=14;
   const w = Math.max(280, padLeft*2 + daysSpan*pxPerDay);
   const h = 150;
-  const minW = Math.min(...ys), maxW = Math.max(...ys);
+  const dataMin = Math.min(...ys), dataMax = Math.max(...ys);
+  const dataRange = (dataMax - dataMin) || 1;
+  // Goal line only shows when the goal is within a bounded margin of the readings, so
+  // a faraway goal doesn't flatten the chart. When shown, the y-range grows to include
+  // it so the line (and the projection to it) stays inside the chart.
+  const showGoalLine = goalType!=='maintain' && p.goalWeight >= dataMin - dataRange*1.5 && p.goalWeight <= dataMax + dataRange*1.5;
+  const minW = showGoalLine ? Math.min(dataMin, p.goalWeight) : dataMin;
+  const maxW = showGoalLine ? Math.max(dataMax, p.goalWeight) : dataMax;
   const range = (maxW - minW) || 1;
   const plotTop = padTop, plotBottom = h - padBottom;
   const mapY = (val)=> plotTop + ( (maxW - val) / range ) * (plotBottom - plotTop);
@@ -2441,7 +2448,6 @@ function renderTrendChart(){
   // Goal reference line: only drawn when the goal falls within a bounded margin of
   // the plotted range, so a goal far outside current readings doesn't flatten the
   // whole chart into an unreadable near-flat line.
-  const showGoalLine = goalType!=='maintain' && p.goalWeight >= minW - range*1.5 && p.goalWeight <= maxW + range*1.5;
   const goalY = showGoalLine ? mapY(p.goalWeight) : null;
 
   // Forward projection: tied to the SAME forecastGoal() used by the Goal Forecast
@@ -2466,7 +2472,7 @@ function renderTrendChart(){
     <div class="trail-wrap trail-tip-wrap" id="trend-chart-scroll" style="position:relative;">
       <svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg">
         ${showGoalLine ? `<line x1="${padLeft}" y1="${goalY}" x2="${w-padLeft}" y2="${goalY}" stroke="var(--moss)" stroke-width="1.5" stroke-dasharray="3 4"/>
-        <text x="${w-padLeft}" y="${goalY-5}" text-anchor="end" font-size="10" fill="var(--moss)" font-family="'IBM Plex Mono'">Goal ${fmtWeight(p.goalWeight,0)}</text>` : ''}
+        <text x="${showProjection ? projX-72 : w-padLeft}" y="${goalY-5}" text-anchor="end" font-size="10" fill="var(--moss)" font-family="'IBM Plex Mono'">Goal ${fmtWeight(p.goalWeight,0)}</text>` : ''}
         <path d="${lineD}" fill="none" stroke="var(--line)" stroke-width="1.5"/>
         <line x1="${trendX1}" y1="${trendY1}" x2="${trendX2}" y2="${trendY2}" stroke="${color}" stroke-width="3" stroke-dasharray="5 5" stroke-linecap="round"/>
         ${showProjection ? `<line x1="${mapX(xs[n-1])}" y1="${mapY(logs[n-1].weight)}" x2="${projX}" y2="${goalY}" stroke="${color}" stroke-width="2" stroke-dasharray="1.5 3.5" stroke-linecap="round" opacity="0.55"/>
