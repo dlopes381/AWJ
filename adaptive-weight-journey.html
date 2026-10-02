@@ -1948,6 +1948,7 @@ function renderDashboard(){
 
   bindCalorieBreakdownControls();
   bindDisclosureAnimations(el);
+  scrollTrendChartToLatest(el);
 
   const quickWeightInput = document.getElementById('quick-weight-input');
   const quickCalInput = document.getElementById('quick-cal-input');
@@ -2341,6 +2342,18 @@ function getGoalProgressDirection(ratePerWeek, goalType){
   return n > 0 ? 'toward' : 'away';
 }
 
+// A wide weight trend chart scrolls sideways; start it at the newest readings.
+// The Insights section can be collapsed (zero width), so also scroll when it opens.
+function scrollTrendChartToLatest(container){
+  const scrollNow = ()=>{
+    const wrap = document.getElementById('trend-chart-scroll');
+    if(wrap) wrap.scrollLeft = wrap.scrollWidth;
+  };
+  scrollNow();
+  const insights = container.querySelector('details');
+  if(insights) insights.addEventListener('toggle', scrollNow);
+}
+
 function renderTrendChart(){
   const p = state.profile;
   const goalType = p.goalType || 'loss';
@@ -2355,7 +2368,10 @@ function renderTrendChart(){
   // computeTrend) instead of equally-spaced indexes — a logging gap now shows as an
   // actual gap on the chart, and the trend line/projection extend by real elapsed
   // days rather than an approximated "average spacing between points."
-  const pxPerDay = Math.max(2, Math.min(50, 340/(daysSpan||1)));
+  // At least MIN_PX_PER_DAY between days so many readings stay readable; a long
+  // history makes the chart wider than the card and it scrolls sideways.
+  const MIN_PX_PER_DAY = 16;
+  const pxPerDay = Math.max(MIN_PX_PER_DAY, Math.min(50, 340/(daysSpan||1)));
   const padTop=18, padBottom=34, padLeft=14;
   const w = Math.max(280, padLeft*2 + daysSpan*pxPerDay);
   const h = 150;
@@ -2447,7 +2463,7 @@ function renderTrendChart(){
       <span class="trend-arrow" style="background:${color}22; color:${color};">${arrowGlyph}</span>
       <span style="color:${color};">${label}</span>
     </div>
-    <div class="trail-wrap trail-tip-wrap" style="position:relative;">
+    <div class="trail-wrap trail-tip-wrap" id="trend-chart-scroll" style="position:relative;">
       <svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg">
         ${showGoalLine ? `<line x1="${padLeft}" y1="${goalY}" x2="${w-padLeft}" y2="${goalY}" stroke="var(--moss)" stroke-width="1.5" stroke-dasharray="3 4"/>
         <text x="${w-padLeft}" y="${goalY-5}" text-anchor="end" font-size="10" fill="var(--moss)" font-family="'IBM Plex Mono'">Goal ${fmtWeight(p.goalWeight,0)}</text>` : ''}
